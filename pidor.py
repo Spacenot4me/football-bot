@@ -127,8 +127,10 @@ async def pick_random_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         times_selected = user_stats['times_selected'] if user_stats else 1
 
-        chat_response = mistral.chat.complete(
+        chat_response = await mistral.chat.complete_async(
             model= model,
+            timeout_ms=30000,
+            retries=None,
             messages = [
                 {
                     "role": "user",

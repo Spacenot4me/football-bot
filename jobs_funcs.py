@@ -45,19 +45,30 @@ async def start_repeating_job(update: Update, context: CallbackContext):
         await update.message.reply_text('The bot is already running in this chat.')
         return
 
-    chat_name = context.args[0]
-    reg_week_day = context.args[1]
-    reg_time = context.args[2]
-    game_week_day = context.args[3]
-    game_time = context.args[4]
+    if len(context.args or []) != 5:
+        await update.message.reply_text(
+            "Usage: /start_repeating_job NAME REG_DAY REG_TIME GAME_DAY GAME_TIME\n"
+            "Example: /start_repeating_job Football monday 10:00 wednesday 19:00"
+        )
+        return
 
-    create_chat(tg_chat_id, chat_name, game_time, game_week_day, reg_time, reg_week_day)
+    chat_name, reg_week_day, reg_time, game_week_day, game_time = context.args
 
-    next_reg_time = get_next_weekday(reg_week_day, reg_time)
+    try:
+        next_reg_time = get_next_weekday(reg_week_day, reg_time)
+        get_next_weekday(game_week_day, game_time)
+    except (KeyError, ValueError):
+        await update.message.reply_text(
+            "Use English weekdays (monday, tuesday, wednesday, thursday, friday, saturday, sunday) "
+            "and times in HH:MM format, for example 19:00."
+        )
+        return
 
     now = get_current_time()
 
     initial_delay = (next_reg_time - now).total_seconds()
+
+    create_chat(tg_chat_id, chat_name, game_time, game_week_day, reg_time, reg_week_day)
 
     # Schedule job to run every week
     weekly_interval = 7 * 24 * 60 * 60  # 7 days in seconds

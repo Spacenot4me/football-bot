@@ -1,5 +1,6 @@
 import os
 import datetime
+import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, CallbackContext, MessageHandler, filters
 from bans import ban, ban_forever, get_all_bans_command, get_my_bans, unban
@@ -14,6 +15,14 @@ from jobs_funcs import get_jobs, start_repeating_job, stop_repeating_job, start,
 from pidor import pick_random_user, get_random_stats, clear_random_stats
 
 TOKEN = os.getenv("TG_TOKEN")
+logger = logging.getLogger(__name__)
+
+async def unknown_command(update: Update, context: CallbackContext):
+    logger.warning("Unknown command received")
+
+async def handle_error(update: object, context: CallbackContext):
+    error = context.error
+    logger.error("Failed to handle update", exc_info=(type(error), error, error.__traceback__))
 
 def initiate(application):
     chats = get_all_chats()
@@ -49,6 +58,7 @@ def migchat(bot, update):
 # Main function
 def main():
     application = Application.builder().token(TOKEN).build()
+    application.add_error_handler(handle_error)
 
     application.add_handler(MessageHandler(filters.StatusUpdate.MIGRATE, migchat))
 
@@ -159,11 +169,11 @@ def main():
             await callback_mapping[action](update, context)
 
     application.add_handler(CallbackQueryHandler(callback_query_handler))
+    application.add_handler(MessageHandler(filters.COMMAND, unknown_command))
 
     initiate(application)
 
     application.run_polling()
-    application.idle()
 
 
 if __name__ == '__main__':

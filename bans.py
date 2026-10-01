@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta
+from html import escape
 from telegram import Update
 from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
@@ -92,9 +93,13 @@ async def get_my_bans(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user = get_user(user_id)
 
-    bans = get_players_ban(user)
+    if not user:
+        await update.message.reply_text("You are not registered. Send /start in a private chat with the bot first.")
+        return
 
-    message = f"Hello @{user['name']}!\nHere's a list of your current bans:\n"
+    bans = get_players_ban(user_id)
+
+    message = f"Hello {escape(user['name'])}!\nHere's a list of your current bans:\n"
 
     if not bans:
         message += "You currently have no bans."

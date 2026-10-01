@@ -3,10 +3,8 @@ FROM python:3.10.5-slim
 # Set working directory
 WORKDIR /app
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
-    sqlite3 \
-    && rm -rf /var/lib/apt/lists/*
+# Verify Python's built-in SQLite support; the sqlite3 CLI is not needed
+RUN python -c "import sqlite3; sqlite3.connect(':memory:').execute('SELECT 1')"
 
 # Copy Pipfile and Pipfile.lock
 COPY Pipfile Pipfile.lock ./
@@ -21,7 +19,7 @@ COPY . .
 # Create necessary directories
 RUN mkdir -p /app/data
 
-# Create the database and run migrations
+# Set the default database location
 ENV DATABASE_PATH=/app/data/football.db
 
 # Expose port (if needed for health checks)

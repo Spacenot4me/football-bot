@@ -138,6 +138,10 @@ async def last_match(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     chat_data = get_chat_by_tg_id(tg_chat_id)
 
+    if not chat_data:
+        await update.message.reply_text("This chat is not configured. Please use /start_repeating_job first.")
+        return
+
     last_match = get_last_match(chat_data['id'])
 
     if len(last_match) == 0:
@@ -157,6 +161,10 @@ async def last_5_matches_players(update: Update, context: ContextTypes.DEFAULT_T
     tg_chat_id = update.effective_chat.id
     
     chat_data = get_chat_by_tg_id(tg_chat_id)
+
+    if not chat_data:
+        await update.message.reply_text("This chat is not configured. Please use /start_repeating_job first.")
+        return
     
     # Get players from last 5 matches
     last_5_matches_data = get_last_5_matches_with_players(chat_data['id'])
