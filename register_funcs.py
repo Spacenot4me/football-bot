@@ -1,5 +1,7 @@
 from datetime import datetime
+import logging
 import re
+import sqlite3
 import pytz
 from date_utils import get_hours_until_match, get_current_time
 from operations.bans import delete_ban, get_players_ban
@@ -9,10 +11,12 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
 from telegram.error import BadRequest, Forbidden
 from telegram.ext import CallbackContext, ContextTypes
-from constants import PRIORITY_HOURS, SQL_DATETIME_FORMAT
+from constants import DATETIME_FORMAT, PRIORITY_HOURS, SQL_DATETIME_FORMAT
 from operations.matches import get_current_match, get_match, was_in_last_match
 from operations.users import get_all_users_from_db, get_user, get_user_by_nickname
 from utils import get_reply_markup, is_user_in_chat, get_message
+
+logger = logging.getLogger(__name__)
 
 def is_player_banned(user_id):
     player_bans = get_players_ban(user_id)
@@ -233,7 +237,7 @@ async def register_plus_one(update: Update, context: CallbackContext, tg_chat_id
         return
 
     keyboard = [
-        [InlineKeyboardButton("Confirm", callback_data=f'confirm_{tg_chat_id}')],
+        [InlineKeyboardButton("Confirm", callback_data=f'confirm_{tg_chat_id}_{match_id}_{res}')],
         [InlineKeyboardButton("Quit", callback_data=f'removefromdm_{tg_chat_id}')],
     ]
     try:
@@ -255,12 +259,43 @@ async def register_plus_one(update: Update, context: CallbackContext, tg_chat_id
     context.job_queue.run_once(check_for_confimation, 14400, data=job_data)
     await respond(f"{player['name']} has been invited to the match at {current_match['datetime']}. Awaiting their confirmation.")
 
-async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE, tg_chat_id):
-    user_id = update.callback_query.from_user.id
-    chat_data = get_chat_by_tg_id(tg_chat_id)
+async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE, tg_chat_id, expected_match_id=None, expected_registration_id=None):
+    query = update.callback_query
+    user_id = query.from_user.id
 
-    res = get_current_match(chat_data['id'])
-    current_match = res
-    match_id = current_match['match_id']
+    async def show_result(text, allow_quit=False):
+        markup = InlineKeyboardMarkup([
+            [InlineKeyboardButton("Quit", callback_data=f'removefromdm_{tg_chat_id}')],
+        ]) if allow_quit else None
+        try:
+            await query.edit_message_text(text=text, reply_markup=markup)
+        except BadRequest:
+            # Old/deleted messages and repeated clicks still receive feedback.
+            await context.bot.send_message(chat_id=user_id, text=text, reply_markup=markup)
 
-    confirm_user_registration(match_id, user_id)
+    try:
+        chat_data = get_chat_by_tg_id(tg_chat_id)
+        current_match = get_current_match(chat_data['id']) if chat_data else None
+        if not current_match or (expected_match_id is not None and current_match['match_id'] != int(expected_match_id)):
+            await show_result("This invitation is no longer valid for the current match. Please ask to be invited again.")
+            return
+        match_id = current_match['match_id']
+        registration = check_if_user_registered(match_id, user_id)
+        if not registration or (expected_registration_id is not None and registration['registration_id'] != int(expected_registration_id)):
+            await show_result("Your invitation has expired or was cancelled. You are not registered through this invitation.")
+            return
+        if get_hours_until_match(current_match['datetime']) < 0:
+            await show_result("Confirmation is closed: this match has already started.")
+            return
+        already_confirmed = bool(registration['confirmed'])
+        if not already_confirmed and not confirm_user_registration(match_id, user_id, registration['registration_id']):
+            await show_result("Your invitation has expired or was cancelled. Please ask to be invited again.")
+            return
+    except sqlite3.Error:
+        logger.exception("Could not confirm match registration")
+        await context.bot.send_message(chat_id=user_id, text="Could not confirm your registration. Please press Confirm again.")
+        return
+
+    match_time = datetime.strptime(current_match['datetime'], DATETIME_FORMAT).strftime('%d.%m.%Y %H:%M')
+    status = "was already confirmed" if already_confirmed else "has been confirmed"
+    await show_result(f"✅ Your registration for the match on {match_time} {status}.", allow_quit=True)

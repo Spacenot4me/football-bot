@@ -12,8 +12,8 @@ os.environ.setdefault("MISTRAL_API_KEY", "test-key")
 
 import pytz
 from telegram import Chat, Message, MessageEntity, Update, User
-from telegram.error import Forbidden
-from telegram.ext import Application
+from telegram.error import BadRequest, Forbidden
+from telegram.ext import Application, CallbackQueryHandler
 
 import main
 from operations import common
@@ -91,12 +91,20 @@ class PlusOneTests(unittest.IsolatedAsyncioTestCase):
         self.update.effective_chat = previous_chat
         self.context.bot.send_message.reset_mock()
 
+    def confirmation_update(self, user_id=2):
+        return SimpleNamespace(callback_query=SimpleNamespace(
+            from_user=SimpleNamespace(id=user_id),
+            data='confirm_-100_1_1',
+            answer=AsyncMock(), edit_message_text=AsyncMock(),
+        ))
+
     async def test_private_username_invites_case_insensitively_and_requires_confirmation(self):
         await self.invite()
         self.assertEqual(self.registrations(), [(2, 1, 1, 0, 1)])
         sent = self.context.bot.send_message.await_args.kwargs
         self.assertEqual(sent['chat_id'], 2)
         self.assertEqual(sent['reply_markup'].inline_keyboard[0][0].text, "Confirm")
+        self.assertEqual(sent['reply_markup'].inline_keyboard[0][0].callback_data, "confirm_-100_1_1")
         job = self.context.job_queue.run_once.call_args
         self.assertEqual(job.args[1], 14400)
         self.assertEqual(job.kwargs['data'], {'chat_id': -100, 'user_id': 2, 'match_id': 1})
@@ -261,6 +269,126 @@ class PlusOneTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.registrations(), [])
         self.context.bot.send_message.assert_not_awaited()
         self.message.reply_text.assert_not_awaited()
+
+    async def test_confirmation_updates_message_and_keeps_only_quit_button(self):
+        await self.invite()
+        update = self.confirmation_update()
+        await register_funcs.confirm(update, self.context, '-100', '1', '1')
+        self.assertEqual(self.registrations(), [(2, 1, 1, 1, 1)])
+        result = update.callback_query.edit_message_text.await_args.kwargs
+        self.assertIn('✅', result['text'])
+        self.assertIn('has been confirmed', result['text'])
+        self.assertIn(self.match_time.strftime('%d.%m.%Y %H:%M'), result['text'])
+        buttons = [button for row in result['reply_markup'].inline_keyboard for button in row]
+        self.assertEqual([button.text for button in buttons], ['Quit'])
+
+    async def test_repeated_confirmation_reports_already_confirmed(self):
+        await self.invite()
+        update = self.confirmation_update()
+        await register_funcs.confirm(update, self.context, '-100', '1', '1')
+        await register_funcs.confirm(update, self.context, '-100', '1', '1')
+        self.assertIn('already confirmed', update.callback_query.edit_message_text.await_args.kwargs['text'])
+        self.assertEqual(self.registrations(), [(2, 1, 1, 1, 1)])
+
+    async def test_cancelled_invitation_reports_expiry_without_success(self):
+        await self.invite()
+        with closing(sqlite3.connect(common.DB_PATH)) as connection, connection:
+            connection.execute('DELETE FROM Match_Registration')
+        update = self.confirmation_update()
+        await register_funcs.confirm(update, self.context, '-100', '1', '1')
+        result = update.callback_query.edit_message_text.await_args.kwargs
+        self.assertIn('expired or was cancelled', result['text'])
+        self.assertIsNone(result['reply_markup'])
+        self.assertEqual(self.registrations(), [])
+
+    async def test_old_confirmation_cannot_confirm_new_match(self):
+        await self.invite()
+        with closing(sqlite3.connect(common.DB_PATH)) as connection, connection:
+            connection.execute('INSERT INTO Matches SELECT 2,chat_id,datetime,created_at FROM Matches WHERE match_id=1')
+            connection.execute('INSERT INTO Match_Registration (match_id,user_id,registered_by_id,is_plus,confirmed,priority) VALUES (2,2,1,1,0,3)')
+        update = self.confirmation_update()
+        await register_funcs.confirm(update, self.context, '-100', '1', '1')
+        self.assertIn('no longer valid', update.callback_query.edit_message_text.await_args.kwargs['text'])
+        self.assertEqual([row[3] for row in self.registrations()], [0,0])
+
+    async def test_replaced_invitation_cannot_be_confirmed_by_old_button(self):
+        await self.invite()
+        with closing(sqlite3.connect(common.DB_PATH)) as connection, connection:
+            connection.execute('DELETE FROM Match_Registration')
+            connection.execute('INSERT INTO Match_Registration (registration_id,match_id,user_id,registered_by_id,is_plus,confirmed,priority) VALUES (20,1,2,1,1,0,3)')
+        update = self.confirmation_update()
+        await register_funcs.confirm(update, self.context, '-100', '1', '1')
+        self.assertIn('expired or was cancelled', update.callback_query.edit_message_text.await_args.kwargs['text'])
+        self.assertEqual(self.registrations(), [(2,1,1,0,1)])
+
+    async def test_another_user_cannot_confirm_the_invited_player(self):
+        await self.invite()
+        update = self.confirmation_update(user_id=3)
+        await register_funcs.confirm(update, self.context, '-100', '1', '1')
+        self.assertEqual(self.registrations(), [(2,1,1,0,1)])
+        self.assertIn('expired or was cancelled', update.callback_query.edit_message_text.await_args.kwargs['text'])
+
+    async def test_started_match_reports_closed_confirmation(self):
+        await self.invite()
+        update = self.confirmation_update()
+        with patch.object(register_funcs, 'get_hours_until_match', return_value=-1):
+            await register_funcs.confirm(update, self.context, '-100', '1', '1')
+        self.assertIn('already started', update.callback_query.edit_message_text.await_args.kwargs['text'])
+        self.assertEqual(self.registrations(), [(2,1,1,0,1)])
+
+    async def test_edit_failure_still_sends_confirmation_feedback(self):
+        await self.invite()
+        self.context.bot.send_message.reset_mock()
+        update = self.confirmation_update()
+        update.callback_query.edit_message_text.side_effect = BadRequest('Message to edit not found')
+        await register_funcs.confirm(update, self.context, '-100', '1', '1')
+        result = self.context.bot.send_message.await_args.kwargs
+        self.assertEqual(result['chat_id'], 2)
+        self.assertIn('has been confirmed', result['text'])
+        self.assertEqual(self.registrations(), [(2,1,1,1,1)])
+
+    async def test_sqlite_confirmation_failure_does_not_report_success(self):
+        await self.invite()
+        self.context.bot.send_message.reset_mock()
+        update = self.confirmation_update()
+        with patch.object(register_funcs, 'confirm_user_registration', side_effect=sqlite3.OperationalError('database is locked')):
+            with self.assertLogs(register_funcs.logger, level='ERROR'):
+                await register_funcs.confirm(update, self.context, '-100', '1', '1')
+        update.callback_query.edit_message_text.assert_not_awaited()
+        self.assertIn('Could not confirm', self.context.bot.send_message.await_args.kwargs['text'])
+        self.assertEqual(self.registrations(), [(2,1,1,0,1)])
+
+    async def test_confirmation_timeout_keeps_confirmed_registration(self):
+        await self.invite()
+        update = self.confirmation_update()
+        await register_funcs.confirm(update, self.context, '-100', '1', '1')
+        self.context.job = SimpleNamespace(data=self.context.job_queue.run_once.call_args.kwargs['data'])
+        self.context.bot.send_message.reset_mock()
+        await register_funcs.check_for_confimation(self.context)
+        self.assertEqual(self.registrations(), [(2,1,1,1,1)])
+        self.context.bot.send_message.assert_not_awaited()
+
+    async def test_confirmation_callback_routes_match_and_invitation_ids(self):
+        await self.invite()
+        application = Application.builder().token('123456:test-token').build()
+        builder = Mock()
+        builder.token.return_value.build.return_value = application
+        with patch.object(Application, 'builder', return_value=builder):
+            with patch.object(Application, 'run_polling'), patch.object(main, 'initiate'):
+                main.main()
+        handler = next(handler for handler in application.handlers[0] if isinstance(handler, CallbackQueryHandler))
+        update = self.confirmation_update()
+        await handler.callback(update, self.context)
+        self.assertEqual(self.registrations(), [(2,1,1,1,1)])
+        update.callback_query.answer.assert_awaited_once()
+        self.assertIn('has been confirmed', update.callback_query.edit_message_text.await_args.kwargs['text'])
+
+    async def test_legacy_confirmation_button_still_gives_feedback(self):
+        await self.invite()
+        update = self.confirmation_update()
+        await register_funcs.confirm(update, self.context, '-100')
+        self.assertEqual(self.registrations(), [(2,1,1,1,1)])
+        self.assertIn('has been confirmed', update.callback_query.edit_message_text.await_args.kwargs['text'])
 
 
 if __name__ == '__main__':

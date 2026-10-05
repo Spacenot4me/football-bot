@@ -71,11 +71,15 @@ ORDER BY mr.priority, mr.registered_at, mr.registration_id
 def update_match_registration(registration_id, user_id, registered_by_id, is_plus, priority, match_id):
     execute_query("UPDATE Match_Registration SET user_id = ?, registered_by_id = ?, is_plus = ?, confirmed = ?, priority = ?, match_id = ? WHERE registration_id = ?", (user_id, registered_by_id, is_plus, priority, match_id, registration_id))
 
-def confirm_user_registration(match_id, user_id):
-    execute_query("""
-UPDATE Match_Registration SET confirmed = 1
-WHERE match_id = ? AND user_id = ?
-""", (match_id, user_id))
+def confirm_user_registration(match_id, user_id, registration_id=None):
+    where = "match_id = ? AND user_id = ? AND confirmed = 0"
+    params = (match_id, user_id)
+    if registration_id is not None:
+        where += " AND registration_id = ?"
+        params += (registration_id,)
+    with closing(connect_db()) as conn, conn:
+        cursor = conn.execute("UPDATE Match_Registration SET confirmed = 1 WHERE " + where, params)
+        return cursor.rowcount > 0
 
 # Delete
 def delete_match_registration(match_id, user_id):

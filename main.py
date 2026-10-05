@@ -101,17 +101,9 @@ def main():
 
     def parse_callback_data(data):
         parts = data.split('_')
-        if len(parts) == 3:
-            action, chat_id, user_id = parts
-            return action, chat_id, user_id
-        elif len(parts) == 2:
-            action, chat_id = parts
-            return action, chat_id
-        elif len(parts) == 1:
-            action = parts[0]
-            return action,
-        else:
-            raise ValueError("Invalid data format")
+        if 1 <= len(parts) <= 4:
+            return tuple(parts)
+        raise ValueError("Invalid data format")
 
 
     async def callback_query_handler(update: Update, context: CallbackContext) -> None:
@@ -144,7 +136,9 @@ def main():
 
         if action == 'confirm':
             chat_id = parsed_callback_data[1]
-            await confirm(update, context, chat_id)
+            match_id = parsed_callback_data[2] if len(parsed_callback_data) >= 3 else None
+            registration_id = parsed_callback_data[3] if len(parsed_callback_data) == 4 else None
+            await confirm(update, context, chat_id, match_id, registration_id)
 
         if action == 'removefromdm':
             chat_id = parsed_callback_data[1]
