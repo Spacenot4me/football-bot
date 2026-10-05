@@ -13,7 +13,7 @@ def get_user(id):
     return fetch_one_query("SELECT * FROM Users WHERE user_id = ?", (id,))
 
 def get_user_by_nickname(nickname):
-    return fetch_one_query("SELECT * FROM Users WHERE nickname = ?", (nickname,))
+    return fetch_one_query("SELECT * FROM Users WHERE nickname = ? COLLATE NOCASE", (nickname,))
 
 # Update
 def update_user(nickname, name):
