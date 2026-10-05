@@ -1,8 +1,13 @@
+import logging
+import sqlite3
+
 from telegram import Update
 from telegram.ext import ContextTypes
 
 from operations.users import create_user, delete_user, get_all_users_from_db, get_user
 from utils import is_chat_admin
+
+logger = logging.getLogger(__name__)
 
 async def register_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -49,13 +54,18 @@ async def get_all_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def delete_account(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    
-    user = get_user(user_id)
-    if user:
-        try:
+
+    try:
+        user = get_user(user_id)
+        if user:
             delete_user(user_id)
-            await context.bot.send_message(chat_id=user['chat_id'], text="You account was delete. From now, you will not be able to register to the games.")
-        except Exception as e:
-            await context.bot.send_message(chat_id=user['chat_id'], text=f"Oops! Something went wrong: {str(e)}")
-    else: 
-        await context.bot.send_message(chat_id=user_id, text="You are not registered.")
+    except sqlite3.Error:
+        logger.exception("Could not delete user account")
+        await context.bot.send_message(chat_id=user_id, text="Could not delete your account. Please try again later.")
+        return
+
+    if user:
+        text = "Your account has been deleted. To register for games again, send /start in my private chat."
+    else:
+        text = "You are not registered."
+    await context.bot.send_message(chat_id=user_id, text=text)

@@ -21,4 +21,4 @@ def update_user(nickname, name):
 
 # Delete
 def delete_user(id):
-    execute_query("DELETE FROM Users WHERE user_id = ?", (id))
+    execute_query("DELETE FROM Users WHERE user_id = ?", (id,))
