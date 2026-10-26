@@ -1,4 +1,5 @@
 import os
+from contextlib import closing
 import sqlite3
 import tempfile
 import unittest
@@ -25,7 +26,7 @@ class CommandTests(unittest.IsolatedAsyncioTestCase):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.previous_db_path = common.DB_PATH
         common.DB_PATH = str(Path(self.temp_dir.name) / "test.db")
-        with sqlite3.connect(common.DB_PATH) as connection:
+        with closing(sqlite3.connect(common.DB_PATH)) as connection, connection:
             connection.executescript("""
                 CREATE TABLE Users (user_id INTEGER PRIMARY KEY, nickname TEXT, name TEXT);
                 CREATE TABLE Bans (ban_id INTEGER PRIMARY KEY, user_id INTEGER, until TEXT);
@@ -46,7 +47,7 @@ class CommandTests(unittest.IsolatedAsyncioTestCase):
         self.temp_dir.cleanup()
 
     async def test_bans_query_uses_user_id_and_escapes_name(self):
-        with sqlite3.connect(common.DB_PATH) as connection:
+        with closing(sqlite3.connect(common.DB_PATH)) as connection, connection:
             connection.executemany(
                 "INSERT INTO Bans (user_id, until) VALUES (?, ?)",
                 [(7, "2030-01-01"), (8, "2040-01-01")],
@@ -80,7 +81,7 @@ class CommandTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(client.chat.complete_async.await_args.kwargs["timeout_ms"], 30000)
         client.chat.complete.assert_not_called()
         self.update.message.reply_text.assert_awaited_once_with("Generated poem")
-        with sqlite3.connect(common.DB_PATH) as connection:
+        with closing(sqlite3.connect(common.DB_PATH)) as connection, connection:
             self.assertEqual(connection.execute("SELECT user_id FROM Random_Selections").fetchone()[0], 7)
 
     async def test_error_handler_only_logs(self):
@@ -108,7 +109,7 @@ class CommandTests(unittest.IsolatedAsyncioTestCase):
                     await jobs_funcs.start_repeating_job(self.update, self.context)
                 self.update.message.reply_text.assert_awaited_once()
                 self.context.job_queue.run_repeating.assert_not_called()
-                with sqlite3.connect(common.DB_PATH) as connection:
+                with closing(sqlite3.connect(common.DB_PATH)) as connection, connection:
                     self.assertEqual(connection.execute("SELECT COUNT(*) FROM Chats").fetchone()[0], 0)
 
     async def test_schedule_saves_valid_arguments_and_creates_job(self):
@@ -123,7 +124,7 @@ class CommandTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(job_args["data"], {"chat_id": 7})
         self.assertEqual(job_args["interval"], 7 * 24 * 60 * 60)
         self.assertGreater(job_args["first"], 0)
-        with sqlite3.connect(common.DB_PATH) as connection:
+        with closing(sqlite3.connect(common.DB_PATH)) as connection, connection:
             row = connection.execute("SELECT name, reg_week_day, reg_time, game_week_day, game_time FROM Chats").fetchone()
             self.assertEqual(row, tuple(self.context.args))
 

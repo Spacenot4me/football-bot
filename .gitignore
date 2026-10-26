@@ -13,6 +13,8 @@ __pycache__
 .venv/
 venv/
 .aws/
+AGENTS.md
+/docs/CAPTAINS_DRAFT_DESIGN.md
 
 *.pyc
 *.pyo

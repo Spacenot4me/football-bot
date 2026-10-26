@@ -15,6 +15,7 @@ from constants import DATETIME_FORMAT, PRIORITY_HOURS, SQL_DATETIME_FORMAT
 from operations.matches import get_current_match, get_match, was_in_last_match
 from operations.users import get_all_users_from_db, get_user, get_user_by_nickname
 from utils import get_reply_markup, is_user_in_chat, get_message
+from draft_funcs import on_player_removed, sync_registration
 
 logger = logging.getLogger(__name__)
 
@@ -51,8 +52,11 @@ async def check_for_confimation(context: ContextTypes.DEFAULT_TYPE):
     is_user_registered = check_if_user_registered(curr_match['match_id'], user_id)
 
     if is_user_registered and is_user_registered['confirmed'] == 0:
-        delete_match_registration(curr_match['match_id'], user_id)
-        await context.bot.send_message(chat_id=tg_chat_id, text=f"@{is_user_registered['nickname']} did not confirm their registration!")
+        removed = delete_match_registration(curr_match['match_id'], user_id)
+        if removed:
+            notified = await on_player_removed(context, tg_chat_id, curr_match['match_id'], user_id)
+            if not notified:
+                await context.bot.send_message(chat_id=tg_chat_id, text=f"@{is_user_registered['nickname']} did not confirm their registration!", disable_notification=False)
         return
 
 def get_priority(user_id, reg_time, game_time, was_in_last_match, is_plus):
@@ -187,6 +191,7 @@ async def register_himself(update: Update, context: CallbackContext):
     res = register_core(chat_id, user_id, user_id)
 
     if res:
+        await sync_registration(context, tg_chat_id, get_current_match(chat_id)['match_id'])
         query = update.callback_query
         await query.edit_message_text(text=get_message(chat_id), reply_markup=get_reply_markup(tg_chat_id), parse_mode=ParseMode.HTML)
 
@@ -251,12 +256,14 @@ async def register_plus_one(update: Update, context: CallbackContext, tg_chat_id
             reply_markup=InlineKeyboardMarkup(keyboard),
         )
     except (Forbidden, BadRequest):
-        delete_match_registration(match_id, user_id)
+        if delete_match_registration(match_id, user_id):
+            await on_player_removed(context, tg_chat_id, match_id, user_id)
         await respond("I could not message this player. Ask them to unblock me and send /start, then try again.")
         return
 
     job_data = {'user_id': user_id, 'chat_id': tg_chat_id, 'match_id': match_id}
     context.job_queue.run_once(check_for_confimation, 14400, data=job_data)
+    await sync_registration(context, tg_chat_id, match_id)
     await respond(f"{player['name']} has been invited to the match at {current_match['datetime']}. Awaiting their confirmation.")
 
 async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE, tg_chat_id, expected_match_id=None, expected_registration_id=None):
@@ -299,3 +306,4 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE, tg_chat_id
     match_time = datetime.strptime(current_match['datetime'], DATETIME_FORMAT).strftime('%d.%m.%Y %H:%M')
     status = "was already confirmed" if already_confirmed else "has been confirmed"
     await show_result(f"✅ Your registration for the match on {match_time} {status}.", allow_quit=True)
+    await sync_registration(context, tg_chat_id, match_id)

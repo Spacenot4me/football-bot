@@ -1,5 +1,6 @@
 from operations.chats import create_chat, delete_chat, get_chat_by_tg_id
-from operations.matches import create_match, get_match_by_datetime
+from operations.matches import create_match, get_match_by_datetime, get_current_match
+from draft_funcs import close_match_draft
 from utils import get_reply_markup, is_chat_admin
 from date_utils import get_next_weekday, get_current_time
 from constants import  DATETIME_FORMAT
@@ -22,6 +23,10 @@ async def start(context: CallbackContext):
     tg_chat_id = job_data['chat_id']
 
     chat_data = get_chat_by_tg_id(tg_chat_id)
+
+    previous_match = get_current_match(chat_data['id'])
+    if previous_match:
+        await close_match_draft(context, tg_chat_id, previous_match['match_id'])
 
     next_match_datetime = get_next_weekday(chat_data['game_week_day'], chat_data['game_time'])
     create_match(next_match_datetime, 130, chat_data['id'])
@@ -97,6 +102,10 @@ async def stop_repeating_job(update: Update, context: CallbackContext):
     for job in jobs:
         if str(job.name) == str(tg_chat_id):
             job.schedule_removal()
+            chat_data = get_chat_by_tg_id(tg_chat_id)
+            current_match = get_current_match(chat_data['id']) if chat_data else None
+            if current_match:
+                await close_match_draft(context, tg_chat_id, current_match['match_id'])
             delete_chat(tg_chat_id)
             await update.message.reply_text("The bot has been stopped.")
             return

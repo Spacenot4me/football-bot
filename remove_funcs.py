@@ -11,6 +11,7 @@ from operations.match_registrations import delete_match_plus_one_registration, d
 from operations.matches import get_current_match
 from operations.users import get_user, get_user_by_nickname
 from utils import is_chat_admin
+from draft_funcs import on_player_removed
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +72,8 @@ async def remove_from_dm(update: Update, context: ContextTypes.DEFAULT_TYPE, tg_
     hours_difference = get_hours_until_match(current_match['datetime'])
     
     # First delete the registration
-    delete_match_registration(current_match['match_id'], user_id)
+    removed = delete_match_registration(current_match['match_id'], user_id)
+    draft_notified = await on_player_removed(context, tg_chat_id, current_match['match_id'], user_id) if removed else False
     
     # Then check if there's a waiting list player who can replace
     has_waiting_list_player = await check_waiting_list_and_notify(
@@ -92,7 +94,7 @@ async def remove_from_dm(update: Update, context: ContextTypes.DEFAULT_TYPE, tg_
         create_ban(user_id, banned_until)
         user = get_user(user_id)
         await context.bot.send_message(chat_id=tg_chat_id, text=f"@{user['nickname']} - {user['name']}, you've been banned until {banned_until} for cancelling your registration too close to the match.")
-    elif hours_difference < 20 and has_waiting_list_player and player_position is not None and player_position < MAX_PLAYERS:
+    elif hours_difference < 20 and has_waiting_list_player and player_position is not None and player_position < MAX_PLAYERS and not draft_notified:
         # Player cancelled with short notice but someone from waiting list can play
         user = get_user(user_id)
         await context.bot.send_message(chat_id=tg_chat_id, text=f"@{user['nickname']} - {user['name']} cancelled with short notice, but a player from the waiting list has been promoted to replace them.")
@@ -174,6 +176,7 @@ async def remove_plus_one(update: Update, context: ContextTypes.DEFAULT_TYPE, tg
         await finish("This player has already been removed from the match.")
         return
     name = invited_player_name(invitation)
+    await on_player_removed(context, tg_chat_id, current_match['match_id'], removed_user_id)
     await finish(f"Removed {name} from the match.")
 
     has_waiting_list_player = await check_waiting_list_and_notify(
@@ -228,7 +231,9 @@ async def remove_other(update: Update, context: ContextTypes.DEFAULT_TYPE):
             break
 
     # Delete the registration first
-    delete_match_registration(current_match['match_id'], user['user_id'])
+    removed = delete_match_registration(current_match['match_id'], user['user_id'])
+    if removed:
+        await on_player_removed(context, tg_chat_id, current_match['match_id'], user['user_id'])
     
     # Check if someone from waiting list can be promoted
     await check_waiting_list_and_notify(
@@ -261,15 +266,21 @@ async def remove_other_plus_one(update: Update, context: ContextTypes.DEFAULT_TY
         await update.message.reply_text("No user was provided.")
         return
 
-    # Delete the plus one registration first
-    delete_match_plus_one_registration(current_match['match_id'], user['user_id'])
+    # Capture the removed player's position before changing the sorted roster.
+    registrations = get_current_match_registrations(chat['id'])
+    removed_user_id = delete_match_plus_one_registration(current_match['match_id'], user['user_id'])
+    player_position = next((index for index, row in enumerate(registrations)
+                            if row['user_id'] == removed_user_id), None)
+    if removed_user_id is not None:
+        await on_player_removed(context, tg_chat_id, current_match['match_id'], removed_user_id)
     
     # Check if someone from waiting list can be promoted
     await check_waiting_list_and_notify(
         context, 
         tg_chat_id, 
         current_match['match_id'], 
-        current_match['datetime']
+        current_match['datetime'],
+        player_position,
     )
 
     await context.bot.set_message_reaction(chat_id=tg_chat_id, message_id=message_id, reaction="👌")

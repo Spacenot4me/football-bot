@@ -13,6 +13,7 @@ from register_funcs import register_himself, register_another_from_chat, registe
 from remove_funcs import remove_from_dm, remove_other_plus_one, remove_plus_one, remove_other, start_remove_plus_one
 from jobs_funcs import get_jobs, start_repeating_job, stop_repeating_job, start, manual_start_registration
 from pidor import pick_random_user, get_random_stats, clear_random_stats
+from draft_funcs import captains, cancel_team_draft, teams, draft_callback
 
 TOKEN = os.getenv("TG_TOKEN")
 logger = logging.getLogger(__name__)
@@ -71,6 +72,9 @@ def main():
     application.add_handler(CommandHandler("get_my_bans", get_my_bans))
     application.add_handler(CommandHandler("get_all_bans", get_all_bans_command))
     application.add_handler(CommandHandler("cancel_match", cancel_match))
+    application.add_handler(CommandHandler(["captains", "capitans"], captains))
+    application.add_handler(CommandHandler("cancel_draft", cancel_team_draft))
+    application.add_handler(CommandHandler("teams", teams))
 
     application.add_handler(CommandHandler(
         "show_registration_message", show_registration_message))
@@ -111,6 +115,10 @@ def main():
         await query.answer()
         parsed_callback_data = parse_callback_data(query.data)
         action = parsed_callback_data[0]
+
+        if action in ('draftpick', 'draftrestart', 'draftrestartconfirm', 'draftrestartcancel', 'draftrefresh'):
+            await draft_callback(update, context)
+            return
 
         if action == 'quit':
             chat_id = parsed_callback_data[1]

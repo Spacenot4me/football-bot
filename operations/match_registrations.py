@@ -83,7 +83,9 @@ def confirm_user_registration(match_id, user_id, registration_id=None):
 
 # Delete
 def delete_match_registration(match_id, user_id):
-    execute_query("DELETE FROM Match_Registration WHERE user_id = ? AND match_id = ?", (user_id, match_id))
+    with closing(connect_db()) as conn, conn:
+        cursor = conn.execute("DELETE FROM Match_Registration WHERE user_id = ? AND match_id = ?", (user_id, match_id))
+        return cursor.rowcount > 0
 
 def delete_match_plus_one_registration(match_id, user_id, registration_id=None):
     """Remove one owned invitation and return the removed player's Telegram ID."""

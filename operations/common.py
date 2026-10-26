@@ -1,4 +1,5 @@
 import sqlite3
+from contextlib import closing
 
 import os
 
@@ -10,21 +11,21 @@ def connect_db():
     return conn
 
 def execute_query(query, params=()):
-    with connect_db() as conn:
+    with closing(connect_db()) as conn, conn:
         cursor = conn.cursor()
         cursor.execute(query, params)
         conn.commit()
         return cursor.lastrowid
 
 def fetch_query(query, params=()):
-    with connect_db() as conn:
+    with closing(connect_db()) as conn, conn:
         cursor = conn.cursor()
         cursor.execute(query, params)
         rows = cursor.fetchall()
         return [dict(row) for row in rows]
 
 def fetch_one_query(query, params=()):
-    with connect_db() as conn:
+    with closing(connect_db()) as conn, conn:
         cursor = conn.cursor()
         cursor.execute(query, params)
         row = cursor.fetchone()
