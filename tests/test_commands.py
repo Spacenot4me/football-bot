@@ -19,6 +19,7 @@ import jobs_funcs
 import main
 import pidor
 import utils
+import register_funcs
 from operations import common
 
 
@@ -155,7 +156,8 @@ class CommandTests(unittest.IsolatedAsyncioTestCase):
         for text, callback in (
             ("/get_my_bans", bans.get_my_bans),
             ("/help", main.unknown_command),
-            ("/register_another_from_chat", main.unknown_command),
+            ("/register_another_from_chat", register_funcs.register_another_from_chat),
+            ("/confirm", register_funcs.confirm_command),
         ):
             message = Message(
                 1, datetime.now(timezone.utc), Chat(7, "private"), text=text,
@@ -175,11 +177,33 @@ class CommandTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('random', commands['captains'])
         self.assertIn('draft_help', commands)
         self.assertIn('confirmation', commands['cancel_draft'])
-        self.assertNotIn('register_another_from_chat', commands)
+        self.assertIn('register_another_from_chat', commands)
+        self.assertIn('confirm', commands)
         for name, description in commands.items():
             self.assertTrue(1 <= len(name) <= 32)
             self.assertTrue(1 <= len(description) <= 256)
         self.assertEqual(bot.set_my_commands.await_args.kwargs['scope'].type, 'all_group_chats')
+
+    async def test_command_menu_covers_every_registered_command_including_aliases(self):
+        application = Application.builder().token('123456:test-token').build()
+        builder = Mock()
+        builder.token.return_value.build.return_value = application
+        with patch.object(Application, 'builder', return_value=builder), patch.object(Application, 'run_polling'), patch.object(main, 'initiate'):
+            main.main()
+        registered = {command for handler in application.handlers[0]
+                      for command in getattr(handler, 'commands', ())}
+        menu = [item.command for item in main.USER_COMMANDS]
+        self.assertEqual(set(menu), registered)
+        self.assertEqual(len(menu), len(set(menu)))
+        self.assertTrue({'register_me', 'capitans', 'register_another_from_chat', 'confirm',
+                         'start_repeating_job', 'remove_other_plus_one', 'clear_random_stats'} <= registered)
+
+    async def test_text_confirmation_explains_private_button_instead_of_confirming_arbitrary_match(self):
+        self.update.effective_message = self.update.message
+        with patch.object(register_funcs, 'confirm_user_registration') as confirm_registration:
+            await register_funcs.confirm_command(self.update, self.context)
+        confirm_registration.assert_not_called()
+        self.assertIn('press Confirm', self.update.message.reply_text.await_args.args[0])
 
     async def test_command_menu_failure_is_logged_without_blocking_startup(self):
         bot = SimpleNamespace(set_my_commands=AsyncMock(side_effect=Forbidden('No permission')))

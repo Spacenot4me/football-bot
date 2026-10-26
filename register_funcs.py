@@ -82,7 +82,7 @@ def get_priority(user_id, reg_time, game_time, was_in_last_match, is_plus):
     return 2
 
 async def register_another_from_chat(update: Update, context: CallbackContext):
-    user_id = update.callback_query.from_user.id
+    user_id = update.effective_user.id
     tg_chat_id = update.effective_chat.id
     users = get_all_users_from_db()
 
@@ -265,6 +265,15 @@ async def register_plus_one(update: Update, context: CallbackContext, tg_chat_id
     context.job_queue.run_once(check_for_confimation, 14400, data=job_data)
     await sync_registration(context, tg_chat_id, match_id)
     await respond(f"{player['name']} has been invited to the match at {current_match['datetime']}. Awaiting their confirmation.")
+
+async def confirm_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.effective_message.reply_text(
+        'To confirm your match registration, press Confirm in the invitation I sent you in private. '
+        'That button identifies the exact match and invitation. '
+        'If the invitation expired or was cancelled, ask to be invited again.',
+        disable_notification=True,
+    )
+
 
 async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE, tg_chat_id, expected_match_id=None, expected_registration_id=None):
     query = update.callback_query

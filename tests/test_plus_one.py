@@ -210,6 +210,16 @@ class PlusOneTests(unittest.IsolatedAsyncioTestCase):
         await register_funcs.register_plus_one(self.update, self.context, '-100', '2')
         self.assertEqual(self.registrations(), [(2, 1, 1, 0, 1)])
 
+    async def test_legacy_group_command_opens_the_same_private_player_menu(self):
+        self.update.effective_chat = SimpleNamespace(id=-100, type='supergroup')
+        self.update.callback_query = None
+        await register_funcs.register_another_from_chat(self.update, self.context)
+        sent = self.context.bot.send_message.await_args.kwargs
+        self.assertEqual(sent['chat_id'], 1)
+        self.assertIsNotNone(sent['reply_markup'])
+        self.assertEqual(self.context.user_data['plus_one_prompt'], {'chat_id': -100, 'match_id': 1})
+        self.assertEqual(self.registrations(), [])
+
     async def test_confirmation_only_confirms_selected_player(self):
         await self.invite()
         self.context.bot.get_chat_member.return_value.status = "member"

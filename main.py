@@ -8,7 +8,7 @@ from matches import cancel_match
 from operations.chats import get_all_chats, get_chat_by_tg_id, update_chat
 from users import delete_account, get_all_users, register_user
 from utils import refresh_message, show_registration_message, last_match, last_5_matches_players
-from register_funcs import register_himself, register_another_from_chat, register_plus_one, register_plus_one_by_username, confirm
+from register_funcs import register_himself, register_another_from_chat, register_plus_one, register_plus_one_by_username, confirm, confirm_command
 from remove_funcs import remove_from_dm, remove_other_plus_one, remove_plus_one, remove_other, start_remove_plus_one
 from jobs_funcs import get_jobs, start_repeating_job, stop_repeating_job, manual_start_registration, schedule_weekly_registration
 from pidor import pick_random_user, get_random_stats, clear_random_stats
@@ -19,17 +19,34 @@ logger = logging.getLogger(__name__)
 
 USER_COMMANDS = [
     BotCommand('start', 'Activate the bot and register your profile (in private chat)'),
+    BotCommand('register_me', 'Register your profile in private chat (alias for /start)'),
     BotCommand('delete_my_account', 'Delete your registered profile'),
+    BotCommand('register_another_from_chat', 'Invite another player: open their selection menu from the game chat'),
+    BotCommand('confirm', 'How to confirm an invitation using its Confirm button'),
     BotCommand('get_my_bans', 'Show your bans'),
     BotCommand('get_all_bans', 'Show all bans'),
     BotCommand('last_match', 'Show players from the previous match'),
     BotCommand('last_5_matches_players', 'Show players from the last five matches'),
     BotCommand('captains', 'Choose captains: @a @b | random | random @a @b @c (admin)'),
+    BotCommand('capitans', 'Alias for /captains: @a @b | random | random @a @b @c (admin)'),
     BotCommand('teams', 'Show and pin the current teams'),
     BotCommand('cancel_draft', 'Cancel draft with confirmation (admin or captain)'),
     BotCommand('draft_help', 'Examples and help for captain selection and team draft'),
     BotCommand('pidor', 'Select a random registered chat member for today'),
     BotCommand('pidor_stats', 'Show daily selection statistics'),
+    BotCommand('start_repeating_job', 'Schedule: NAME REG_DAY REG_TIME GAME_DAY GAME_TIME (admin)'),
+    BotCommand('stop', 'Stop registration schedule in this chat (admin)'),
+    BotCommand('start_registration', 'Open match registration now (admin)'),
+    BotCommand('show_registration_message', 'Show the current registration list and buttons (admin)'),
+    BotCommand('get_jobs', 'Show scheduled tasks and their next Prague time'),
+    BotCommand('get_all_users', 'Show all registered bot users (admin)'),
+    BotCommand('ban', 'Ban a player: /ban @username (admin)'),
+    BotCommand('unban', 'Remove player bans: /unban @username (admin)'),
+    BotCommand('ban_forever', 'Ban a player indefinitely: /ban_forever @username (admin)'),
+    BotCommand('cancel_match', 'Cancel the current match (admin)'),
+    BotCommand('remove_other', 'Remove a player: /remove_other @username (admin)'),
+    BotCommand('remove_other_plus_one', 'Remove the external guest invited by @username (admin)'),
+    BotCommand('clear_random_stats', 'Clear daily selection statistics for this chat (admin)'),
 ]
 
 
@@ -90,7 +107,8 @@ def main():
     application.add_handler(CommandHandler("remove_other", remove_other))
     application.add_handler(CommandHandler("remove_other_plus_one", remove_other_plus_one))
 
-    application.add_handler(CommandHandler("confirm", confirm))
+    application.add_handler(CommandHandler("confirm", confirm_command))
+    application.add_handler(CommandHandler("register_another_from_chat", register_another_from_chat))
     application.add_handler(CommandHandler("get_jobs", get_jobs))
 
     application.add_handler(CommandHandler("start", register_user))
