@@ -107,6 +107,7 @@ def render_draft(view):
         InlineKeyboardButton('🔁 Restart draft', callback_data=f"draftrestart_{d['draft_id']}"),
         InlineKeyboardButton('Refresh 🔄', callback_data=f"draftrefresh_{d['draft_id']}"),
     ])
+    keyboard.append([InlineKeyboardButton('❌ Cancel draft', callback_data=f"draftcancel_{d['draft_id']}")])
     return '\n'.join(text), InlineKeyboardMarkup(keyboard)
 
 
@@ -252,18 +253,52 @@ async def teams(update, context):
 
 async def cancel_team_draft(update, context):
     tg_chat_id = update.effective_chat.id
-    if not await _admin(context, tg_chat_id, _actor(update)):
-        await _send(context, tg_chat_id, 'Only chat admins can cancel a draft.')
-        return
     async with _lock(tg_chat_id):
         match = _current(tg_chat_id)
         draft = drafts.get_active_draft(match['match_id']) if match else None
         if not draft:
             await _send(context, tg_chat_id, 'No active draft in this chat.')
             return
-        drafts.cancel_draft(draft['draft_id'])
-        await _cleanup(context, draft['draft_id'])
-        await _delete_message(context, tg_chat_id, update.effective_message.message_id)
+        drafts.record_message(draft['draft_id'], tg_chat_id, update.effective_message.message_id)
+        actor = _actor(update)
+        view, request_id = drafts.request_cancellation(draft['draft_id'], actor, await _admin(context, tg_chat_id, actor))
+        if request_id:
+            await _confirmation(context, tg_chat_id, draft['draft_id'], request_id, actor, cancellation=True)
+        elif view and view['error']:
+            await _send(context, tg_chat_id, view['error'], draft['draft_id'])
+        await _publish(context, view)
+
+
+async def _confirmation(context, tg_chat_id, draft_id, request_id, actor, cancellation=False):
+    if cancellation:
+        text = 'cancel the draft? All teams and draft messages will be removed.'
+        buttons = [
+            InlineKeyboardButton('✅ Confirm cancellation', callback_data=f'draftcancelconfirm_{request_id}'),
+            InlineKeyboardButton('Keep draft', callback_data=f'draftcancelreject_{request_id}'),
+        ]
+    else:
+        text = 'restart the draft? All current picks will be reset.'
+        buttons = [
+            InlineKeyboardButton('✅ Confirm restart', callback_data=f'draftrestartconfirm_{request_id}'),
+            InlineKeyboardButton('Cancel', callback_data=f'draftrestartcancel_{request_id}'),
+        ]
+    await _send(context, tg_chat_id, f'<a href="tg://user?id={actor}">Requester</a>, {text}',
+                draft_id, InlineKeyboardMarkup([buttons]))
+
+
+async def draft_help(update, context):
+    await _send(context, update.effective_chat.id,
+                '<b>Captains and team draft</b>\n'
+                '<code>/captains</code> or <code>/captains random</code> — random captains.\n'
+                '<code>/captains @alice @bob</code> — choose two captains.\n'
+                '<code>/captains random @alice @bob @charlie</code> — choose two from a list.\n'
+                '<code>/capitans</code> is an alias for <code>/captains</code>.\n'
+                'Only chat admins can start a draft. Players must register with the bot first.\n'
+                'You can start with any number of players; missing captain candidates can join later.\n'
+                '<code>/teams</code> — show and pin the teams.\n'
+                '<code>/cancel_draft</code> or <b>Cancel draft</b> — request cancellation.\n'
+                '<b>Restart draft</b> and <b>Cancel draft</b> are for admins and current captains. '
+                'The requester must confirm; choosing Keep draft leaves the teams unchanged.')
 
 
 async def draft_callback(update, context):
@@ -272,7 +307,11 @@ async def draft_callback(update, context):
     tg_chat_id = update.effective_chat.id
     try:
         action, identifier = parts[0], int(parts[1])
-        request = drafts.get_restart_request(identifier) if action in ('draftrestartconfirm', 'draftrestartcancel') else None
+        request = None
+        if action in ('draftrestartconfirm', 'draftrestartcancel'):
+            request = drafts.get_restart_request(identifier)
+        elif action in ('draftcancelconfirm', 'draftcancelreject'):
+            request = drafts.get_cancel_request(identifier)
         draft_id = request['draft_id'] if request else identifier
         identity = drafts.get_draft(draft_id)
         if not identity or not identity['match'] or str(identity['match']['tg_chat_id']) != str(tg_chat_id):
@@ -287,20 +326,21 @@ async def draft_callback(update, context):
                 error = view['error'] if view else None
             elif action == 'draftrefresh' and len(parts) == 2:
                 view = drafts.sync_draft(draft_id)
-            elif action == 'draftrestart' and len(parts) == 2:
-                view, request_id = drafts.request_restart(draft_id, actor, await _admin(context, tg_chat_id, actor))
+            elif action in ('draftrestart', 'draftcancel') and len(parts) == 2:
+                cancellation = action == 'draftcancel'
+                create_request = drafts.request_cancellation if cancellation else drafts.request_restart
+                view, request_id = create_request(draft_id, actor, await _admin(context, tg_chat_id, actor))
                 error = view['error'] if view else None
                 if request_id:
-                    markup = InlineKeyboardMarkup([[
-                        InlineKeyboardButton('✅ Confirm restart', callback_data=f'draftrestartconfirm_{request_id}'),
-                        InlineKeyboardButton('Cancel', callback_data=f'draftrestartcancel_{request_id}'),
-                    ]])
-                    await _send(context, tg_chat_id,
-                                f'<a href="tg://user?id={actor}">Requester</a>, restart the draft? All current picks will be reset.',
-                                draft_id, markup)
-            elif action in ('draftrestartconfirm', 'draftrestartcancel') and request and len(parts) == 2:
-                view, result = drafts.finish_restart(identifier, actor, await _admin(context, tg_chat_id, actor),
-                                                      cancel=action == 'draftrestartcancel')
+                    await _confirmation(context, tg_chat_id, draft_id, request_id, actor, cancellation)
+            elif action in ('draftrestartconfirm', 'draftrestartcancel', 'draftcancelconfirm', 'draftcancelreject') and request and len(parts) == 2:
+                is_admin = await _admin(context, tg_chat_id, actor)
+                if action.startswith('draftcancel'):
+                    view, result = drafts.finish_cancellation(identifier, actor, is_admin,
+                                                              dismiss=action == 'draftcancelreject')
+                else:
+                    view, result = drafts.finish_restart(identifier, actor, is_admin,
+                                                         cancel=action == 'draftrestartcancel')
                 own = request['requested_by_id'] == actor
                 # Another user's click must not remove the owner's confirmation buttons.
                 if own and ('Only chat admins' not in result):
@@ -315,7 +355,7 @@ async def draft_callback(update, context):
                 return
             if error:
                 await _send(context, tg_chat_id, error, draft_id)
-            elif view is None and action not in ('draftrestartconfirm', 'draftrestartcancel'):
+            elif view is None and action not in ('draftrestartconfirm', 'draftrestartcancel', 'draftcancelconfirm', 'draftcancelreject'):
                 await _send(context, tg_chat_id, 'This draft is no longer active for the current match.')
             await _publish(context, view)
     except (ValueError, IndexError):

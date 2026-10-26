@@ -1,7 +1,8 @@
 import os
 import datetime
 import logging
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand, BotCommandScopeAllGroupChats
+from telegram.error import TelegramError
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, CallbackContext, MessageHandler, filters
 from bans import ban, ban_forever, get_all_bans_command, get_my_bans, unban
 from date_utils import get_next_weekday, get_current_time
@@ -13,10 +14,34 @@ from register_funcs import register_himself, register_another_from_chat, registe
 from remove_funcs import remove_from_dm, remove_other_plus_one, remove_plus_one, remove_other, start_remove_plus_one
 from jobs_funcs import get_jobs, start_repeating_job, stop_repeating_job, start, manual_start_registration
 from pidor import pick_random_user, get_random_stats, clear_random_stats
-from draft_funcs import captains, cancel_team_draft, teams, draft_callback
+from draft_funcs import captains, cancel_team_draft, teams, draft_callback, draft_help
 
 TOKEN = os.getenv("TG_TOKEN")
 logger = logging.getLogger(__name__)
+
+USER_COMMANDS = [
+    BotCommand('start', 'Activate the bot and register your profile (in private chat)'),
+    BotCommand('delete_my_account', 'Delete your registered profile'),
+    BotCommand('get_my_bans', 'Show your bans'),
+    BotCommand('get_all_bans', 'Show all bans'),
+    BotCommand('last_match', 'Show players from the previous match'),
+    BotCommand('last_5_matches_players', 'Show players from the last five matches'),
+    BotCommand('captains', 'Choose captains: @a @b | random | random @a @b @c (admin)'),
+    BotCommand('teams', 'Show and pin the current teams'),
+    BotCommand('cancel_draft', 'Cancel draft with confirmation (admin or captain)'),
+    BotCommand('draft_help', 'Examples and help for captain selection and team draft'),
+    BotCommand('pidor', 'Select a random registered chat member for today'),
+    BotCommand('pidor_stats', 'Show daily selection statistics'),
+]
+
+
+async def configure_command_menu(application):
+    # Run on startup rather than during import/build; no token is used by tests.
+    for scope in (None, BotCommandScopeAllGroupChats()):
+        try:
+            await application.bot.set_my_commands(USER_COMMANDS, scope=scope)
+        except TelegramError:
+            logger.warning('Could not update Telegram command menu', exc_info=True)
 
 async def unknown_command(update: Update, context: CallbackContext):
     logger.warning("Unknown command received")
@@ -59,6 +84,7 @@ def migchat(bot, update):
 # Main function
 def main():
     application = Application.builder().token(TOKEN).build()
+    application.post_init = configure_command_menu
     application.add_error_handler(handle_error)
 
     application.add_handler(MessageHandler(filters.StatusUpdate.MIGRATE, migchat))
@@ -75,6 +101,7 @@ def main():
     application.add_handler(CommandHandler(["captains", "capitans"], captains))
     application.add_handler(CommandHandler("cancel_draft", cancel_team_draft))
     application.add_handler(CommandHandler("teams", teams))
+    application.add_handler(CommandHandler("draft_help", draft_help))
 
     application.add_handler(CommandHandler(
         "show_registration_message", show_registration_message))
@@ -116,7 +143,8 @@ def main():
         parsed_callback_data = parse_callback_data(query.data)
         action = parsed_callback_data[0]
 
-        if action in ('draftpick', 'draftrestart', 'draftrestartconfirm', 'draftrestartcancel', 'draftrefresh'):
+        if action in ('draftpick', 'draftrestart', 'draftrestartconfirm', 'draftrestartcancel', 'draftrefresh',
+                      'draftcancel', 'draftcancelconfirm', 'draftcancelreject'):
             await draft_callback(update, context)
             return
 

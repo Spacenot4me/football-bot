@@ -45,3 +45,12 @@ CREATE TABLE IF NOT EXISTS Team_Draft_Restart_Requests (
     status TEXT NOT NULL DEFAULT 'pending'
         CHECK (status IN ('pending', 'confirmed', 'cancelled', 'stale'))
 );
+
+CREATE TABLE IF NOT EXISTS Team_Draft_Cancel_Requests (
+    request_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    draft_id INTEGER NOT NULL,
+    requested_by_id INTEGER NOT NULL,
+    draft_revision INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'confirmed', 'cancelled', 'stale'))
+);

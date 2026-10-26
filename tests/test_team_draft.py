@@ -284,6 +284,85 @@ class DraftStorageTests(DraftFixture, unittest.TestCase):
         self.assertNotIn(14, assigned)
         self.assertIn(15, {p['user_id'] for p in view['free']})
 
+    def test_cancellation_requires_authorized_owner_and_explicit_confirmation(self):
+        view = self.pick(self.create(8))
+        did = view['draft']['draft_id']
+        denied, rid = drafts.request_cancellation(did, 3, False)
+        self.assertIsNone(rid)
+        self.assertIn('Only chat admins', denied['error'])
+        _, rid = drafts.request_cancellation(did, 1, False)
+        self.assertEqual(drafts.sync_draft(did)['picks'], view['picks'])
+        _, result = drafts.finish_cancellation(rid, 2)
+        self.assertIn('person who requested', result)
+        cancelled, result = drafts.finish_cancellation(rid, 1)
+        self.assertEqual(result, 'Draft cancelled.')
+        self.assertEqual(cancelled['draft']['status'], 'cancelled')
+        self.assertEqual(cancelled['picks'], [])
+        self.assertIsNone(drafts.get_active_draft(1))
+        self.assertEqual(drafts.get_cancel_request(rid)['status'], 'confirmed')
+
+    def test_dismiss_cancellation_preserves_teams_revision_and_turn(self):
+        view = self.pick(self.create(8))
+        _, rid = drafts.request_cancellation(view['draft']['draft_id'], 2, False)
+        kept, result = drafts.finish_cancellation(rid, 2, dismiss=True)
+        self.assertEqual(result, 'Cancellation dismissed. Draft kept.')
+        self.assertEqual(kept['picks'], view['picks'])
+        self.assertEqual(kept['draft']['revision'], view['draft']['revision'])
+        self.assertEqual(kept['turn'], view['turn'])
+
+    def test_cancellation_rechecks_admin_and_captain_role(self):
+        view = self.create(8)
+        _, rid = drafts.request_cancellation(view['draft']['draft_id'], 99, True)
+        kept, result = drafts.finish_cancellation(rid, 99, False)
+        self.assertIn('Only chat admins', result)
+        self.assertNotEqual(kept['draft']['status'], 'cancelled')
+        kept, result = drafts.finish_cancellation(rid, 99, True)
+        self.assertEqual(result, 'Draft cancelled.')
+
+    def test_pending_cancellation_is_stale_after_pick_or_restart(self):
+        view = self.create(8)
+        did = view['draft']['draft_id']
+        _, rid = drafts.request_cancellation(did, 1, False)
+        view = self.pick(view)
+        kept, result = drafts.finish_cancellation(rid, 1)
+        self.assertIn('no longer valid', result)
+        self.assertEqual(kept['picks'], view['picks'])
+        _, rid = drafts.request_cancellation(did, 1, False)
+        _, restart_id = drafts.request_restart(did, 1, False)
+        drafts.finish_restart(restart_id, 1)
+        self.assertEqual(drafts.get_cancel_request(rid)['status'], 'stale')
+
+    def test_confirmed_cancellation_invalidates_all_other_requests(self):
+        view = self.create(8)
+        did = view['draft']['draft_id']
+        _, restart_id = drafts.request_restart(did, 1, False)
+        _, rid = drafts.request_cancellation(did, 2, False)
+        _, other = drafts.request_cancellation(did, 1, False)
+        drafts.finish_cancellation(rid, 2)
+        self.assertEqual(drafts.get_restart_request(restart_id)['status'], 'stale')
+        self.assertEqual(drafts.get_cancel_request(other)['status'], 'stale')
+        new = drafts.create_draft(1)
+        _, result = drafts.finish_cancellation(rid, 2)
+        self.assertIn('no longer valid', result)
+        self.assertEqual(drafts.get_active_draft(1)['draft_id'], new['draft']['draft_id'])
+
+    def test_waiting_session_can_be_cancelled_by_admin_and_parallel_confirms_run_once(self):
+        view = self.create(0, mode='random_all')
+        _, rid = drafts.request_cancellation(view['draft']['draft_id'], 99, True)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(lambda _: drafts.finish_cancellation(rid, 99, True), range(2)))
+        self.assertEqual(sum(result == 'Draft cancelled.' for _, result in results), 1)
+
+    def test_cancel_request_table_is_added_without_changing_existing_draft(self):
+        view = self.pick(self.create(8))
+        did = view['draft']['draft_id']
+        _, restart_id = drafts.request_restart(did, 1, False)
+        self.sql('DROP TABLE Team_Draft_Cancel_Requests')
+        after, rid = drafts.request_cancellation(did, 2, False)
+        self.assertIsNotNone(rid)
+        self.assertEqual(after['picks'], view['picks'])
+        self.assertEqual(drafts.get_restart_request(restart_id)['status'], 'pending')
+
 
 class DraftTelegramTests(DraftFixture, unittest.IsolatedAsyncioTestCase):
     def setUp(self):
@@ -321,7 +400,9 @@ class DraftTelegramTests(DraftFixture, unittest.IsolatedAsyncioTestCase):
         self.assertIn('Registered players: 0', text)
         view = drafts.sync_draft(d['draft_id'])
         _, markup = draft_funcs.render_draft(view)
-        self.assertEqual(markup.inline_keyboard[-1][0].text, '🔁 Restart draft')
+        buttons = [b.text for row in markup.inline_keyboard for b in row]
+        self.assertIn('🔁 Restart draft', buttons)
+        self.assertIn('❌ Cancel draft', buttons)
 
     async def test_non_admin_cannot_start_and_candidates_validated(self):
         self.update.effective_user.id = 3
@@ -388,6 +469,9 @@ class DraftTelegramTests(DraftFixture, unittest.IsolatedAsyncioTestCase):
         await self.callback(f"draftrestart_{d['draft_id']}", uid=99)
         self.update.callback_query = None
         await draft_funcs.cancel_team_draft(self.update, self.context)
+        self.assertIsNotNone(drafts.get_active_draft(1))
+        confirmation = self.context.bot.send_message.await_args.kwargs['reply_markup'].inline_keyboard[0][0]
+        await self.callback(confirmation.callback_data, uid=99)
         self.assertIsNone(drafts.get_active_draft(1))
         self.assertEqual(drafts.get_messages(d['draft_id']), [])
 
@@ -510,6 +594,89 @@ class DraftTelegramTests(DraftFixture, unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(drafts.get_active_draft(1))
         self.assertEqual(drafts.get_restart_request(request_id)['status'], 'stale')
         self.assertEqual(drafts.get_messages(view['draft']['draft_id']), [])
+
+    async def test_cancel_button_asks_then_keeps_draft_or_cleans_up_after_confirmation(self):
+        view = self.pick(self.create(8))
+        did = view['draft']['draft_id']
+        await draft_funcs.teams(self.update, self.context)
+        await self.callback(f'draftcancel_{did}', uid=2)
+        message = self.context.bot.send_message.await_args.kwargs
+        self.assertTrue(message['disable_notification'])
+        confirm, keep = message['reply_markup'].inline_keyboard[0]
+        self.assertEqual(confirm.text, '✅ Confirm cancellation')
+        self.assertEqual(keep.text, 'Keep draft')
+        await self.callback(keep.callback_data, uid=2)
+        self.assertEqual(drafts.sync_draft(did)['picks'], view['picks'])
+        await self.callback(f'draftcancel_{did}', uid=1)
+        confirm = self.context.bot.send_message.await_args.kwargs['reply_markup'].inline_keyboard[0][0]
+        await self.callback(confirm.callback_data, uid=1)
+        self.assertIsNone(drafts.get_active_draft(1))
+        self.assertEqual(drafts.get_messages(did), [])
+
+    async def test_non_admin_or_captain_cannot_cancel_and_foreign_click_keeps_buttons(self):
+        view = self.create(8)
+        did = view['draft']['draft_id']
+        await draft_funcs.teams(self.update, self.context)
+        await self.callback(f'draftcancel_{did}', uid=3)
+        self.assertIn('Only chat admins', self.context.bot.send_message.await_args.kwargs['text'])
+        await self.callback(f'draftcancel_{did}', uid=1)
+        confirm, keep = self.context.bot.send_message.await_args.kwargs['reply_markup'].inline_keyboard[0]
+        await self.callback(confirm.callback_data, uid=2)
+        self.update.callback_query.edit_message_text.assert_not_awaited()
+        await self.callback(keep.callback_data, uid=2)
+        self.update.callback_query.edit_message_text.assert_not_awaited()
+        self.assertIsNotNone(drafts.get_active_draft(1))
+
+    async def test_cancel_command_accepts_captain_but_requires_confirmation(self):
+        view = self.create(8)
+        await draft_funcs.teams(self.update, self.context)
+        self.update.effective_user.id = 1
+        await draft_funcs.cancel_team_draft(self.update, self.context)
+        self.assertIsNotNone(drafts.get_active_draft(1))
+        message = self.context.bot.send_message.await_args.kwargs
+        self.assertIn('cancel the draft?', message['text'])
+        self.assertEqual(drafts.sync_draft(view['draft']['draft_id'])['picks'], [])
+
+    async def test_cancel_confirmation_from_other_chat_cannot_remove_draft(self):
+        view = self.create(8)
+        _, rid = drafts.request_cancellation(view['draft']['draft_id'], 1, False)
+        await self.callback(f'draftcancelconfirm_{rid}', uid=1, chat_id=-200)
+        self.assertIsNotNone(drafts.get_active_draft(1))
+        self.assertIn('does not belong', self.context.bot.send_message.await_args.kwargs['text'])
+
+    async def test_cancel_button_visible_in_all_active_states(self):
+        view = self.create(0, mode='random_all')
+        did = view['draft']['draft_id']
+        for status in ('waiting_for_players', 'drafting', 'done', 'needs_replacement'):
+            if status != 'waiting_for_players':
+                self.register(*([1, 2] if not self.sql('SELECT 1 FROM Match_Registration') else []))
+                view = drafts.sync_draft(did)
+            view['draft']['status'] = status
+            _, markup = draft_funcs.render_draft(view)
+            self.assertIn(f'draftcancel_{did}', [b.callback_data for row in markup.inline_keyboard for b in row])
+
+    async def test_captain_help_shows_actual_modes_and_permissions(self):
+        await draft_funcs.draft_help(self.update, self.context)
+        text = self.context.bot.send_message.await_args.kwargs['text']
+        for example in ('/captains random', '/captains @alice @bob', '/captains random @alice @bob @charlie'):
+            self.assertIn(example, text)
+        self.assertIn('requester must confirm', text)
+
+    async def test_cancellation_callback_is_registered_in_main_router(self):
+        view = self.create(8)
+        await draft_funcs.teams(self.update, self.context)
+        app = Application.builder().token('123456:test-token').build()
+        builder = Mock()
+        builder.token.return_value.build.return_value = app
+        with patch.object(Application, 'builder', return_value=builder), patch.object(Application, 'run_polling'), patch.object(main, 'initiate'):
+            main.main()
+        self.assertIs(app.post_init, main.configure_command_menu)
+        handler = next(h for h in app.handlers[0] if isinstance(h, CallbackQueryHandler))
+        self.update.callback_query = SimpleNamespace(data=f"draftcancel_{view['draft']['draft_id']}",
+            from_user=SimpleNamespace(id=1), answer=AsyncMock(), edit_message_text=AsyncMock())
+        await handler.callback(self.update, self.context)
+        self.assertIn('cancel the draft?', self.context.bot.send_message.await_args.kwargs['text'])
+        self.update.callback_query.answer.assert_awaited_once()
 
 
 if __name__ == '__main__':

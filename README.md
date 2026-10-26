@@ -42,15 +42,22 @@ Captains and team draft:
 - **Restart draft** is always visible. Only chat admins and current captains
   can use it. The requester must confirm before picks are reset. Old buttons
   and outdated confirmations cannot reset or change the current draft.
+- **Cancel draft** is also always visible and restricted to chat admins and
+  current captains. It asks for **Confirm cancellation / Keep draft** in the
+  group. Only the requester can confirm; permissions are checked again before
+  the draft and its tracked messages are removed. Old confirmations are rejected.
 - A departing captain is replaced randomly by a remaining teammate. If their
   team is empty, the draft is cancelled. The affected captain can pick a
   replacement when a free player becomes available; announcements go to the group.
 - `/teams` reposts and pins the current draft, replacing the old message.
-  Admin-only `/cancel_draft` cancels it and attempts to delete all tracked draft
-  messages. The bot needs permission to pin and delete messages in the group.
+  `/cancel_draft` opens the same confirmation for chat admins and current captains.
+  The bot needs permission to pin and delete messages in the group.
 - Draft state is stored in SQLite and continues after a bot restart on the next
   registration change or refresh. Its tables are created automatically using
   `migrations/add_team_drafts.sql`; no manual migration is needed for this feature.
+- The Telegram command menu updates automatically when the bot starts, including
+  captain selection examples. `/draft_help` explains manual selection, random
+  selection, candidates, and restart/cancellation permissions.
 
 Run offline tests (Telegram and Mistral calls are mocked):
 

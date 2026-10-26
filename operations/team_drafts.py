@@ -84,9 +84,10 @@ def _save(conn, d):
                'draft_pick_count', 'replacement_a', 'replacement_b', 'roster_snapshot')
     conn.execute('UPDATE Team_Drafts SET ' + ', '.join(c + ' = ?' for c in columns)
                  + ' WHERE draft_id = ?', tuple(d[c] for c in columns) + (d['draft_id'],))
-    conn.execute('''UPDATE Team_Draft_Restart_Requests SET status = 'stale'
-                    WHERE draft_id = ? AND status = 'pending' AND draft_revision != ?''',
-                 (d['draft_id'], d['revision']))
+    for table in ('Team_Draft_Restart_Requests', 'Team_Draft_Cancel_Requests'):
+        conn.execute(f'''UPDATE {table} SET status = 'stale'
+                        WHERE draft_id = ? AND status = 'pending' AND draft_revision != ?''',
+                     (d['draft_id'], d['revision']))
 
 
 def _status(conn, d):
@@ -267,7 +268,8 @@ def pick_player(draft_id, actor_id, user_id, revision):
         return _view(conn, d, events)
 
 
-def request_restart(draft_id, actor_id, is_admin):
+def _request_action(draft_id, actor_id, is_admin, action):
+    table = _request_table(action)
     with transaction() as conn:
         d = _load_current(conn, draft_id)
         if not d:
@@ -275,50 +277,85 @@ def request_restart(draft_id, actor_id, is_admin):
         events = _sync(conn, d)
         view = _view(conn, d, events)
         if d['status'] == 'cancelled' or not (is_admin or actor_id in (d['captain_a_id'], d['captain_b_id'])):
-            view['error'] = 'Only chat admins and current captains can restart the draft.'
+            view['error'] = f'Only chat admins and current captains can {action} the draft.'
             return view, None
-        cursor = conn.execute('''INSERT INTO Team_Draft_Restart_Requests
+        cursor = conn.execute(f'''INSERT INTO {table}
             (draft_id, requested_by_id, draft_revision) VALUES (?, ?, ?)''',
             (draft_id, actor_id, d['revision']))
         return view, cursor.lastrowid
 
 
-def get_restart_request(request_id):
+def _request_table(action):
+    # Table names are fixed by code, never supplied by a callback or user input.
+    return {'restart': 'Team_Draft_Restart_Requests', 'cancel': 'Team_Draft_Cancel_Requests'}[action]
+
+
+def request_restart(draft_id, actor_id, is_admin):
+    return _request_action(draft_id, actor_id, is_admin, 'restart')
+
+
+def request_cancellation(draft_id, actor_id, is_admin):
+    return _request_action(draft_id, actor_id, is_admin, 'cancel')
+
+
+def _get_request(request_id, action):
     ensure_draft_tables()
     with closing(connect_db()) as conn:
-        row = conn.execute('SELECT * FROM Team_Draft_Restart_Requests WHERE request_id = ?', (request_id,)).fetchone()
+        row = conn.execute(f'SELECT * FROM {_request_table(action)} WHERE request_id = ?', (request_id,)).fetchone()
         return dict(row) if row else None
 
 
-def finish_restart(request_id, actor_id, is_admin=False, cancel=False):
+def get_restart_request(request_id):
+    return _get_request(request_id, 'restart')
+
+
+def get_cancel_request(request_id):
+    return _get_request(request_id, 'cancel')
+
+
+def _finish_action(request_id, actor_id, is_admin, dismiss, action):
+    table = _request_table(action)
+    noun = 'restart' if action == 'restart' else 'cancellation'
     with transaction() as conn:
-        row = conn.execute('SELECT * FROM Team_Draft_Restart_Requests WHERE request_id = ?', (request_id,)).fetchone()
+        row = conn.execute(f'SELECT * FROM {table} WHERE request_id = ?', (request_id,)).fetchone()
         if not row:
-            return None, 'This restart request is no longer valid.'
+            return None, f'This {noun} request is no longer valid.'
         request = dict(row)
         if request['requested_by_id'] != actor_id:
-            return None, 'Only the person who requested this restart can confirm or cancel it.'
+            return None, f'Only the person who requested this {noun} can confirm or cancel it.'
         d = _load_current(conn, request['draft_id'])
         if not d:
-            return None, 'This restart request is no longer valid.'
+            return None, f'This {noun} request is no longer valid.'
         events = _sync(conn, d)
         # Re-read: synchronization may already have invalidated the request.
-        status = conn.execute('SELECT status FROM Team_Draft_Restart_Requests WHERE request_id = ?', (request_id,)).fetchone()[0]
+        status = conn.execute(f'SELECT status FROM {table} WHERE request_id = ?', (request_id,)).fetchone()[0]
         view = _view(conn, d, events)
         if status != 'pending' or request['draft_revision'] != d['revision'] or d['status'] == 'cancelled':
-            return view, 'This restart request is no longer valid. Please request a restart again.'
-        if cancel:
-            conn.execute("UPDATE Team_Draft_Restart_Requests SET status = 'cancelled' WHERE request_id = ?", (request_id,))
-            return view, 'Restart cancelled.'
+            return view, f'This {noun} request is no longer valid. Please request a {noun} again.'
+        if dismiss:
+            conn.execute(f"UPDATE {table} SET status = 'cancelled' WHERE request_id = ?", (request_id,))
+            return view, 'Restart cancelled.' if action == 'restart' else 'Cancellation dismissed. Draft kept.'
         if not (is_admin or actor_id in (d['captain_a_id'], d['captain_b_id'])):
-            return view, 'Only chat admins and current captains can restart the draft.'
-        conn.execute("UPDATE Team_Draft_Restart_Requests SET status = 'confirmed' WHERE request_id = ?", (request_id,))
+            return view, f'Only chat admins and current captains can {action} the draft.'
+        conn.execute(f"UPDATE {table} SET status = 'confirmed' WHERE request_id = ?", (request_id,))
+        if action == 'cancel':
+            _cancel(conn, d)
+            _save(conn, d)
+            return _view(conn, d, events), 'Draft cancelled.'
         conn.execute('DELETE FROM Team_Picks WHERE draft_id = ?', (d['draft_id'],))
         d['draft_pick_count'] = d['replacement_a'] = d['replacement_b'] = 0
         d['first_pick'] = random.choice(('A', 'B'))
         _status(conn, d)
         _save(conn, d)
         return _view(conn, d, events), 'Draft restarted.'
+
+
+def finish_restart(request_id, actor_id, is_admin=False, cancel=False):
+    return _finish_action(request_id, actor_id, is_admin, cancel, 'restart')
+
+
+def finish_cancellation(request_id, actor_id, is_admin=False, dismiss=False):
+    return _finish_action(request_id, actor_id, is_admin, dismiss, 'cancel')
 
 
 def cancel_draft(draft_id):

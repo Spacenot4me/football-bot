@@ -12,6 +12,7 @@ os.environ.setdefault("MISTRAL_API_KEY", "test-key")
 
 from telegram import Chat, ChatMemberMember, Message, MessageEntity, Update, User
 from telegram.ext import Application
+from telegram.error import Forbidden
 
 import bans
 import jobs_funcs
@@ -160,6 +161,27 @@ class CommandTests(unittest.IsolatedAsyncioTestCase):
             update = Update(1, message=message)
             handler = next(h for h in application.handlers[0] if h.check_update(update))
             self.assertIs(handler.callback, callback)
+
+    async def test_command_menu_contains_captain_modes_and_help(self):
+        bot = SimpleNamespace(set_my_commands=AsyncMock())
+        await main.configure_command_menu(SimpleNamespace(bot=bot))
+        self.assertEqual(bot.set_my_commands.await_count, 2)
+        commands = {item.command: item.description for item in bot.set_my_commands.await_args.args[0]}
+        self.assertIn('@a @b', commands['captains'])
+        self.assertIn('random', commands['captains'])
+        self.assertIn('draft_help', commands)
+        self.assertIn('confirmation', commands['cancel_draft'])
+        self.assertNotIn('register_another_from_chat', commands)
+        for name, description in commands.items():
+            self.assertTrue(1 <= len(name) <= 32)
+            self.assertTrue(1 <= len(description) <= 256)
+        self.assertEqual(bot.set_my_commands.await_args.kwargs['scope'].type, 'all_group_chats')
+
+    async def test_command_menu_failure_is_logged_without_blocking_startup(self):
+        bot = SimpleNamespace(set_my_commands=AsyncMock(side_effect=Forbidden('No permission')))
+        with self.assertLogs(main.logger, level='WARNING'):
+            await main.configure_command_menu(SimpleNamespace(bot=bot))
+        self.assertEqual(bot.set_my_commands.await_count, 2)
 
 
 if __name__ == "__main__":
