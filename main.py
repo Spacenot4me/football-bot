@@ -1,18 +1,16 @@
 import os
-import datetime
 import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand, BotCommandScopeAllGroupChats
 from telegram.error import TelegramError
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, CallbackContext, MessageHandler, filters
 from bans import ban, ban_forever, get_all_bans_command, get_my_bans, unban
-from date_utils import get_next_weekday, get_current_time
 from matches import cancel_match
 from operations.chats import get_all_chats, get_chat_by_tg_id, update_chat
 from users import delete_account, get_all_users, register_user
 from utils import refresh_message, show_registration_message, last_match, last_5_matches_players
 from register_funcs import register_himself, register_another_from_chat, register_plus_one, register_plus_one_by_username, confirm
 from remove_funcs import remove_from_dm, remove_other_plus_one, remove_plus_one, remove_other, start_remove_plus_one
-from jobs_funcs import get_jobs, start_repeating_job, stop_repeating_job, start, manual_start_registration
+from jobs_funcs import get_jobs, start_repeating_job, stop_repeating_job, manual_start_registration, schedule_weekly_registration
 from pidor import pick_random_user, get_random_stats, clear_random_stats
 from draft_funcs import captains, cancel_team_draft, teams, draft_callback, draft_help
 
@@ -54,26 +52,7 @@ def initiate(application):
     chats = get_all_chats()
 
     for chat in chats:
-        now = get_current_time()
-        next_weekday = get_next_weekday(chat['reg_week_day'], chat['reg_time'])
-        if next_weekday < now:
-            next_weekday += datetime.timedelta(days=7)
-
-        initial_delay = (next_weekday - now).total_seconds()
-
-        weekly_interval = 7 * 24 * 60 * 60  # 7 days in seconds
-
-        job_data = {
-        'chat_id': chat['chat_id'],
-        }
-
-        application.job_queue.run_repeating(
-            start,
-            interval=weekly_interval,
-            first=initial_delay,
-            data=job_data,
-            name=chat['chat_id']
-        )
+        schedule_weekly_registration(application.job_queue, chat['chat_id'], chat['reg_week_day'], chat['reg_time'])
 
 def migchat(bot, update):
     oldchatid = update.message.migrate_from_chat_id

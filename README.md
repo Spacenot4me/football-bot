@@ -64,3 +64,17 @@ Run offline tests (Telegram and Mistral calls are mocked):
 ```text
 pipenv run python -m unittest discover -s tests -v
 ```
+
+Registration schedule:
+
+- `/start_repeating_job Football monday 10:00 wednesday 19:00` opens registration
+  every Monday at 10:00 for the next Wednesday game at 19:00, using `Europe/Prague`.
+  The calendar schedule keeps the same local time through summer/winter clock changes.
+- Schedules are restored from `Chats` when the bot restarts. Deploy and restart
+  the updated bot once to replace the old interval jobs; no database migration or
+  reconfiguration of chats is required. Existing matches and registrations are not rewritten.
+- `/get_jobs` displays upcoming runs in Prague time, including the UTC offset.
+- For a schedule inside the clock-change hour, a missing spring 02:30 runs at
+  03:30 that day; an autumn 02:30 runs on its second occurrence (standard time).
+- Invitation confirmation still expires after four elapsed hours, rather than
+  a calendar interval. These one-off invitation timers are not restored after a restart.

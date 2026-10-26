@@ -2,7 +2,7 @@ from operations.chats import create_chat, delete_chat, get_chat_by_tg_id
 from operations.matches import create_match, get_match_by_datetime, get_current_match
 from draft_funcs import close_match_draft
 from utils import get_reply_markup, is_chat_admin
-from date_utils import get_next_weekday, get_current_time
+from date_utils import BOT_TIMEZONE, get_next_weekday, parse_weekday_time
 from constants import  DATETIME_FORMAT
 
 from telegram import Update
@@ -14,9 +14,23 @@ async def get_jobs(update: Update, context: CallbackContext):
     job_info = ""
     for job in jobs:
         job_info += repr(job)
-        job_info += job.next_t.strftime(DATETIME_FORMAT) + "\n"
+        job_info += job.next_t.astimezone(BOT_TIMEZONE).strftime(DATETIME_FORMAT) + " Europe/Prague\n"
 
     await update.message.reply_text("Current jobs: \n" + job_info)
+
+
+def schedule_weekly_registration(job_queue, tg_chat_id, weekday_name, time_str):
+    """Calendar-based weekly registration, shared by setup and startup restore."""
+    weekday, clock_time = parse_weekday_time(weekday_name, time_str)
+    return job_queue.run_daily(
+        start,
+        time=clock_time.replace(tzinfo=BOT_TIMEZONE),
+        # PTB 21 uses Sunday=0, while datetime.weekday() uses Monday=0.
+        days=((weekday + 1) % 7,),
+        data={'chat_id': tg_chat_id},
+        name=str(tg_chat_id),
+        job_kwargs={'coalesce': True, 'max_instances': 1},
+    )
 
 async def start(context: CallbackContext):
     job_data = context.job.data
@@ -60,8 +74,8 @@ async def start_repeating_job(update: Update, context: CallbackContext):
     chat_name, reg_week_day, reg_time, game_week_day, game_time = context.args
 
     try:
-        next_reg_time = get_next_weekday(reg_week_day, reg_time)
-        get_next_weekday(game_week_day, game_time)
+        parse_weekday_time(reg_week_day, reg_time)
+        parse_weekday_time(game_week_day, game_time)
     except (KeyError, ValueError):
         await update.message.reply_text(
             "Use English weekdays (monday, tuesday, wednesday, thursday, friday, saturday, sunday) "
@@ -69,26 +83,8 @@ async def start_repeating_job(update: Update, context: CallbackContext):
         )
         return
 
-    now = get_current_time()
-
-    initial_delay = (next_reg_time - now).total_seconds()
-
     create_chat(tg_chat_id, chat_name, game_time, game_week_day, reg_time, reg_week_day)
-
-    # Schedule job to run every week
-    weekly_interval = 7 * 24 * 60 * 60  # 7 days in seconds
-
-    job_data = {
-        'chat_id': tg_chat_id,
-    }
-
-    job = context.job_queue.run_repeating(
-        start,
-        interval=weekly_interval,
-        first=initial_delay,
-        data=job_data,
-        name=str(tg_chat_id)  # Using chat_id as job name
-    )
+    job = schedule_weekly_registration(context.job_queue, tg_chat_id, reg_week_day, reg_time)
     context.chat_data[str(tg_chat_id)] = job
     await update.message.reply_text("The bot has started successfully.")
 

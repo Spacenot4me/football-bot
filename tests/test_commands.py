@@ -109,6 +109,7 @@ class CommandTests(unittest.IsolatedAsyncioTestCase):
                 with patch.object(jobs_funcs, "is_chat_admin", new=AsyncMock(return_value=True)):
                     await jobs_funcs.start_repeating_job(self.update, self.context)
                 self.update.message.reply_text.assert_awaited_once()
+                self.context.job_queue.run_daily.assert_not_called()
                 self.context.job_queue.run_repeating.assert_not_called()
                 with closing(sqlite3.connect(common.DB_PATH)) as connection, connection:
                     self.assertEqual(connection.execute("SELECT COUNT(*) FROM Chats").fetchone()[0], 0)
@@ -120,11 +121,14 @@ class CommandTests(unittest.IsolatedAsyncioTestCase):
         self.context.job_queue.jobs.return_value = []
         with patch.object(jobs_funcs, "is_chat_admin", new=AsyncMock(return_value=True)):
             await jobs_funcs.start_repeating_job(self.update, self.context)
-        self.context.job_queue.run_repeating.assert_called_once()
-        job_args = self.context.job_queue.run_repeating.call_args.kwargs
+        self.context.job_queue.run_daily.assert_called_once()
+        self.context.job_queue.run_repeating.assert_not_called()
+        job_args = self.context.job_queue.run_daily.call_args.kwargs
         self.assertEqual(job_args["data"], {"chat_id": 7})
-        self.assertEqual(job_args["interval"], 7 * 24 * 60 * 60)
-        self.assertGreater(job_args["first"], 0)
+        self.assertEqual(job_args["days"], (1,))
+        self.assertEqual((job_args['time'].hour, job_args['time'].minute), (10, 0))
+        self.assertEqual(job_args['time'].tzinfo.zone, 'Europe/Prague')
+        self.assertEqual(job_args['name'], '7')
         with closing(sqlite3.connect(common.DB_PATH)) as connection, connection:
             row = connection.execute("SELECT name, reg_week_day, reg_time, game_week_day, game_time FROM Chats").fetchone()
             self.assertEqual(row, tuple(self.context.args))
