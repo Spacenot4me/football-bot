@@ -8,6 +8,8 @@ Adding another player:
   in a private message; you can also send `@username` there after opening the menu.
   A reply to a particular menu uses that menu's game chat. Without a reply, the
   latest menu is used. Open the menu again after a bot restart or for a new match.
+- `/register_another_from_chat` in the game chat opens the same private menu.
+  `/confirm` explains how to use the Confirm button on the specific invitation.
 - Username entry is available only in the bot's private chat after opening the
   **Register ➕ 1️⃣** menu. Messages in the game chat do not register another player.
 - Both players must already be registered with `/start` in the bot's private chat.
@@ -55,8 +57,9 @@ Captains and team draft:
 - Draft state is stored in SQLite and continues after a bot restart on the next
   registration change or refresh. Its tables are created automatically using
   `migrations/add_team_drafts.sql`; no manual migration is needed for this feature.
-- The Telegram command menu updates automatically when the bot starts, including
-  captain selection examples. `/draft_help` explains manual selection, random
+- The Telegram command menu updates automatically when the bot starts, listing
+  all 29 registered commands and aliases, including admin commands and captain
+  selection examples. `/draft_help` explains manual selection, random
   selection, candidates, and restart/cancellation permissions.
 
 Run offline tests (Telegram and Mistral calls are mocked):

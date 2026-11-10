@@ -1,9 +1,32 @@
 # Create
-from operations.common import execute_query, fetch_one_query, fetch_query
+from contextlib import closing
+
+from operations.common import connect_db, execute_query, fetch_one_query, fetch_query
 
 
 def create_match(datetime, amount_per_person, chat_id):
     return execute_query("INSERT INTO Matches (datetime, amount_per_person, chat_id) VALUES (?, ?, ?)", (datetime, amount_per_person, chat_id))
+
+
+def create_match_if_missing(match_datetime, amount_per_person, chat_id):
+    """Return the new match ID, or None if this chat already has that match.
+
+    Serialize the check and insert so simultaneous manual/scheduled starts
+    cannot both create a match, without changing the existing database schema.
+    """
+    with closing(connect_db()) as conn, conn:
+        conn.execute('BEGIN IMMEDIATE')
+        existing = conn.execute(
+            'SELECT match_id FROM Matches WHERE chat_id = ? AND datetime = ?',
+            (chat_id, match_datetime),
+        ).fetchone()
+        if existing:
+            return None
+        cursor = conn.execute(
+            'INSERT INTO Matches (datetime, amount_per_person, chat_id) VALUES (?, ?, ?)',
+            (match_datetime, amount_per_person, chat_id),
+        )
+        return cursor.lastrowid
 
 # Read
 def get_match(match_id):

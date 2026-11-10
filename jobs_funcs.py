@@ -1,5 +1,5 @@
 from operations.chats import create_chat, delete_chat, get_chat_by_tg_id
-from operations.matches import create_match, get_match_by_datetime, get_current_match
+from operations.matches import create_match_if_missing, get_current_match
 from draft_funcs import close_match_draft
 from utils import get_reply_markup, is_chat_admin
 from date_utils import BOT_TIMEZONE, get_next_weekday, parse_weekday_time
@@ -37,18 +37,25 @@ async def start(context: CallbackContext):
     tg_chat_id = job_data['chat_id']
 
     chat_data = get_chat_by_tg_id(tg_chat_id)
+    await _open_registration(context, tg_chat_id, chat_data)
 
+
+async def _open_registration(context, tg_chat_id, chat_data):
+    """Open a match once, shared by scheduled and manual starts."""
+    next_match_datetime = get_next_weekday(chat_data['game_week_day'], chat_data['game_time'])
     previous_match = get_current_match(chat_data['id'])
+    match_id = create_match_if_missing(next_match_datetime, 130, chat_data['id'])
+    if match_id is None:
+        return False
+
     if previous_match:
         await close_match_draft(context, tg_chat_id, previous_match['match_id'])
-
-    next_match_datetime = get_next_weekday(chat_data['game_week_day'], chat_data['game_time'])
-    create_match(next_match_datetime, 130, chat_data['id'])
 
     formatted_game_time = next_match_datetime.strftime("%d.%m.%Y %H:%M")
 
     sent_message = await context.bot.send_message(chat_id=tg_chat_id, text=f"Registration is now open! \nGame time: {formatted_game_time}", reply_markup=get_reply_markup(tg_chat_id))
     await context.bot.pin_chat_message(chat_id=tg_chat_id, message_id=sent_message.message_id)
+    return True
 
 async def start_repeating_job(update: Update, context: CallbackContext):
     if not await is_chat_admin(update, context):
@@ -121,33 +128,14 @@ async def manual_start_registration(update: Update, context: CallbackContext):
         await update.message.reply_text("This chat is not configured. Please use /start_repeating_job first.")
         return
     
-    # Calculate the next match datetime (same as start function does)
-    next_match_datetime = get_next_weekday(chat_data['game_week_day'], chat_data['game_time'])
-    
-    # Check if a match already exists for this datetime
-    existing_match = get_match_by_datetime(chat_data['id'], next_match_datetime)
-    
-    if existing_match:
-        # Match already exists, just send the registration message
-        formatted_game_time = next_match_datetime.strftime("%d.%m.%Y %H:%M")
-        sent_message = await context.bot.send_message(chat_id=tg_chat_id, text=f"Registration is now open! \nGame time: {formatted_game_time}", reply_markup=get_reply_markup(tg_chat_id))
-        await context.bot.pin_chat_message(chat_id=tg_chat_id, message_id=sent_message.message_id)
-        await update.message.reply_text("Registration has been manually started! (Using existing match)")
-    else:
-        # No match exists, create one by calling start
-        job_data = {'chat_id': tg_chat_id}
-        
-        # Create a mock context with the job data
-        class MockJob:
-            def __init__(self, data):
-                self.data = data
-        
-        mock_context = context
-        mock_context.job = MockJob(job_data)
-        
-        try:
-            # Call the start function with the mock context
-            await start(mock_context)
+    try:
+        created = await _open_registration(context, tg_chat_id, chat_data)
+        if created:
             await update.message.reply_text("Registration has been manually started!")
-        except Exception as e:
-            await update.message.reply_text(f"Error starting registration: {str(e)}")
+        else:
+            await update.message.reply_text(
+                "Registration for this match is already open. "
+                "Use /show_registration_message to show the current list."
+            )
+    except Exception as e:
+        await update.message.reply_text(f"Error starting registration: {str(e)}")
