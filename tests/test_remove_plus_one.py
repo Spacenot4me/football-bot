@@ -53,7 +53,7 @@ class RemovePlusOneTests(unittest.IsolatedAsyncioTestCase):
                 VALUES (?,1,?,?,?,1,2)
             """, [(1,1,1,0), (2,2,1,1), (3,3,1,0), (4,4,4,0), (5,5,4,1)])
         self.query = SimpleNamespace(
-            from_user=SimpleNamespace(id=1), data='removeplusone_-100',
+            from_user=SimpleNamespace(id=1), data='removeplusone_-100_1',
             answer=AsyncMock(), edit_message_text=AsyncMock(),
         )
         self.update = SimpleNamespace(callback_query=self.query)
@@ -89,7 +89,7 @@ class RemovePlusOneTests(unittest.IsolatedAsyncioTestCase):
         buttons = [button for row in message['reply_markup'].inline_keyboard for button in row]
         self.assertEqual(message['chat_id'], 1)
         self.assertEqual([button.callback_data for button in buttons],
-                         ['removeplusoneconfirm_-100_2', 'removeplusoneconfirm_-100_3'])
+                         ['removeinvite_-100_1_2', 'removeinvite_-100_1_3'])
         self.assertEqual(self.registered_ids(), [1,2,3,4,5])
 
     async def test_legacy_confirmation_with_two_invites_requires_selection(self):

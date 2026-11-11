@@ -14,8 +14,11 @@ async def cancel_match(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     chat_data = get_chat_by_tg_id(tg_chat_id)
     
-    current_match = get_current_match(chat_data['id'])
-    await close_match_draft(context, tg_chat_id, current_match['match_id'])
+    current_match = get_current_match(chat_data['id']) if chat_data else None
+    if not current_match:
+        await update.message.reply_text('There is no current match to cancel.')
+        return
     delete_match(current_match['match_id'])
+    await close_match_draft(context, tg_chat_id, current_match['match_id'])
     
     await context.bot.set_message_reaction(chat_id=tg_chat_id, message_id=message_id, reaction="👌")

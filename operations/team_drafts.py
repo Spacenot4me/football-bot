@@ -7,9 +7,11 @@ import random
 
 from constants import MAX_PLAYERS
 from operations.common import connect_db
+from operations.registration_safety import ensure_safety_tables
 
 
 def ensure_draft_tables():
+    ensure_safety_tables()
     schema = Path(__file__).resolve().parents[1] / 'migrations' / 'add_team_drafts.sql'
     with closing(connect_db()) as conn:
         conn.executescript(schema.read_text(encoding='utf-8'))
@@ -32,6 +34,7 @@ def _match(conn, match_id):
     row = conn.execute('''
         SELECT m.match_id, m.datetime, m.chat_id, c.chat_id AS tg_chat_id
         FROM Matches m JOIN Chats c ON c.id = m.chat_id WHERE m.match_id = ?
+        AND NOT EXISTS (SELECT 1 FROM Cancelled_Matches x WHERE x.match_id = m.match_id)
     ''', (match_id,)).fetchone()
     return dict(row) if row else None
 
@@ -44,10 +47,11 @@ def _is_current(conn, match):
 
 def _players(conn, match_id):
     return [dict(row) for row in conn.execute('''
-        SELECT mr.user_id, mr.registration_id, mr.confirmed, mr.priority, u.nickname, u.name
+        SELECT mr.user_id, mr.registration_id, mr.confirmed, mr.priority,
+               COALESCE(u.nickname, CAST(mr.user_id AS TEXT)) AS nickname,
+               COALESCE(u.name, 'Deleted account') AS name
         FROM Match_Registration mr
-        JOIN Users u ON u.user_id = mr.user_id
-        JOIN Users inviter ON inviter.user_id = mr.registered_by_id
+        LEFT JOIN Users u ON u.user_id = mr.user_id
         WHERE mr.match_id = ? ORDER BY mr.priority, mr.registered_at, mr.registration_id
     ''', (match_id,))]
 

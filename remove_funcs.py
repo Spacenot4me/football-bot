@@ -7,7 +7,8 @@ from constants import DATETIME_FORMAT, MAX_PLAYERS
 from date_utils import get_hours_until_match
 from operations.bans import create_ban
 from operations.chats import get_chat_by_tg_id
-from operations.match_registrations import delete_match_plus_one_registration, delete_match_registration, get_current_match_registrations, get_invited_match_registrations
+from operations.match_registrations import check_if_user_registered, delete_match_plus_one_registration, delete_match_registration, get_current_match_registrations, get_invited_match_registrations
+from operations.registration_safety import initialize_registration_ids
 from operations.matches import get_current_match
 from operations.users import get_user, get_user_by_nickname
 from utils import is_chat_admin
@@ -50,13 +51,34 @@ async def check_waiting_list_and_notify(context, tg_chat_id, match_id, match_dat
     
     return False  # No waiting list
 
-async def remove_from_dm(update: Update, context: ContextTypes.DEFAULT_TYPE, tg_chat_id):
+async def start_quit(update, context, tg_chat_id, expected_match_id):
+    user_id = update.callback_query.from_user.id
+    chat = get_chat_by_tg_id(tg_chat_id)
+    match = get_current_match(chat['id']) if chat else None
+    registration = check_if_user_registered(match['match_id'], user_id) if match else None
+    if not match or match['match_id'] != int(expected_match_id) or not registration:
+        await context.bot.send_message(chat_id=user_id, text='This quit button is no longer valid for your current registration.')
+        return
+    initialize_registration_ids()
+    markup = InlineKeyboardMarkup([[InlineKeyboardButton('Yes, confirm quit',
+        callback_data=f"leave_{tg_chat_id}_{match['match_id']}_{registration['registration_id']}")]])
+    await context.bot.send_message(chat_id=user_id, text='Do you want to quit?', reply_markup=markup)
+
+
+async def remove_from_dm(update: Update, context: ContextTypes.DEFAULT_TYPE, tg_chat_id, expected_match_id=None, registration_id=None):
     user_id = update.callback_query.from_user.id
     query = update.callback_query
 
     chat_data = get_chat_by_tg_id(tg_chat_id)
 
-    current_match = get_current_match(chat_data['id'])
+    current_match = get_current_match(chat_data['id']) if chat_data else None
+    if not current_match or (expected_match_id is not None and current_match['match_id'] != int(expected_match_id)):
+        await context.bot.send_message(chat_id=user_id, text='This quit button is no longer valid for the current match.')
+        return
+    registration = check_if_user_registered(current_match['match_id'], user_id)
+    if not registration or (registration_id is not None and registration['registration_id'] != int(registration_id)):
+        await context.bot.send_message(chat_id=user_id, text='This registration has already been removed or replaced.')
+        return
     
     # Get current registrations to find player's position before deleting
     current_match_registrations = get_current_match_registrations(chat_data['id'])
@@ -72,7 +94,9 @@ async def remove_from_dm(update: Update, context: ContextTypes.DEFAULT_TYPE, tg_
     hours_difference = get_hours_until_match(current_match['datetime'])
     
     # First delete the registration
-    removed = delete_match_registration(current_match['match_id'], user_id)
+    removed = delete_match_registration(current_match['match_id'], user_id, registration['registration_id'])
+    if not removed:
+        return
     draft_notified = await on_player_removed(context, tg_chat_id, current_match['match_id'], user_id) if removed else False
     
     # Then check if there's a waiting list player who can replace
@@ -109,11 +133,14 @@ def invited_player_name(registration):
     return str(registration['name'] or registration['nickname'] or registration['user_id'])
 
 
-async def start_remove_plus_one(update: Update, context: ContextTypes.DEFAULT_TYPE, tg_chat_id):
+async def start_remove_plus_one(update: Update, context: ContextTypes.DEFAULT_TYPE, tg_chat_id, expected_match_id=None):
     """Ask which owned invitation to remove and bind the button to its record."""
     user_id = update.callback_query.from_user.id
     chat_data = get_chat_by_tg_id(tg_chat_id)
     current_match = get_current_match(chat_data['id']) if chat_data else None
+    if expected_match_id is not None and (not current_match or current_match['match_id'] != int(expected_match_id)):
+        await context.bot.send_message(chat_id=user_id, text='This removal menu is for an older match. Press Refresh in the game chat.')
+        return
     if not current_match or get_hours_until_match(current_match['datetime']) < 0:
         await context.bot.send_message(chat_id=user_id, text="There is no open match in this chat.")
         return
@@ -124,7 +151,7 @@ async def start_remove_plus_one(update: Update, context: ContextTypes.DEFAULT_TY
     keyboard = [
         [InlineKeyboardButton(
             f"Remove {invited_player_name(invitation)}",
-            callback_data=f"removeplusoneconfirm_{tg_chat_id}_{invitation['registration_id']}",
+            callback_data=f"removeinvite_{tg_chat_id}_{current_match['match_id']}_{invitation['registration_id']}",
         )]
         for invitation in invitations
     ]
@@ -135,7 +162,7 @@ async def start_remove_plus_one(update: Update, context: ContextTypes.DEFAULT_TY
     await context.bot.send_message(chat_id=user_id, text=text, reply_markup=InlineKeyboardMarkup(keyboard))
 
 
-async def remove_plus_one(update: Update, context: ContextTypes.DEFAULT_TYPE, tg_chat_id, registration_id=None):
+async def remove_plus_one(update: Update, context: ContextTypes.DEFAULT_TYPE, tg_chat_id, registration_id=None, expected_match_id=None):
     user_id = update.callback_query.from_user.id
     query = update.callback_query
 
@@ -147,6 +174,9 @@ async def remove_plus_one(update: Update, context: ContextTypes.DEFAULT_TYPE, tg
 
     chat_data = get_chat_by_tg_id(tg_chat_id)
     current_match = get_current_match(chat_data['id']) if chat_data else None
+    if expected_match_id is not None and (not current_match or current_match['match_id'] != int(expected_match_id)):
+        await finish('This invitation is no longer available for removal from the current match.')
+        return
     if not current_match or get_hours_until_match(current_match['datetime']) < 0:
         await finish("There is no open match in this chat.")
         return
@@ -207,7 +237,10 @@ async def remove_other(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tg_chat_id = update.effective_chat.id
     chat = get_chat_by_tg_id(tg_chat_id)
 
-    current_match = get_current_match(chat['id'])
+    current_match = get_current_match(chat['id']) if chat else None
+    if not current_match:
+        await update.message.reply_text('There is no current match in this chat.')
+        return
     message_id = update.message.id
 
     if len(context.args) == 1 and context.args[0].startswith('@'):
@@ -253,7 +286,10 @@ async def remove_other_plus_one(update: Update, context: ContextTypes.DEFAULT_TY
     tg_chat_id = update.effective_chat.id
     chat = get_chat_by_tg_id(tg_chat_id)
 
-    current_match = get_current_match(chat['id'])
+    current_match = get_current_match(chat['id']) if chat else None
+    if not current_match:
+        await update.message.reply_text('There is no current match in this chat.')
+        return
     message_id = update.message.id
 
     if len(context.args) == 1 and context.args[0].startswith('@'):

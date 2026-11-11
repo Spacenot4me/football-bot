@@ -94,7 +94,7 @@ class PlusOneTests(unittest.IsolatedAsyncioTestCase):
     def confirmation_update(self, user_id=2):
         return SimpleNamespace(callback_query=SimpleNamespace(
             from_user=SimpleNamespace(id=user_id),
-            data='confirm_-100_1_1',
+            data='confirm2_-100_1_1',
             answer=AsyncMock(), edit_message_text=AsyncMock(),
         ))
 
@@ -104,7 +104,7 @@ class PlusOneTests(unittest.IsolatedAsyncioTestCase):
         sent = self.context.bot.send_message.await_args.kwargs
         self.assertEqual(sent['chat_id'], 2)
         self.assertEqual(sent['reply_markup'].inline_keyboard[0][0].text, "Confirm")
-        self.assertEqual(sent['reply_markup'].inline_keyboard[0][0].callback_data, "confirm_-100_1_1")
+        self.assertEqual(sent['reply_markup'].inline_keyboard[0][0].callback_data, "confirm2_-100_1_1")
         job = self.context.job_queue.run_once.call_args
         self.assertEqual(job.args[1], 14400)
         self.assertEqual(job.kwargs['data'], {'chat_id': -100, 'user_id': 2, 'match_id': 1})
@@ -397,8 +397,8 @@ class PlusOneTests(unittest.IsolatedAsyncioTestCase):
         await self.invite()
         update = self.confirmation_update()
         await register_funcs.confirm(update, self.context, '-100')
-        self.assertEqual(self.registrations(), [(2,1,1,1,1)])
-        self.assertIn('has been confirmed', update.callback_query.edit_message_text.await_args.kwargs['text'])
+        self.assertEqual(self.registrations(), [(2,1,1,0,1)])
+        self.assertIn('old invitation button', update.callback_query.edit_message_text.await_args.kwargs['text'])
 
 
 if __name__ == '__main__':

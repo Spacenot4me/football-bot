@@ -1,4 +1,5 @@
 from datetime import datetime
+from html import escape
 from date_utils import get_hours_until_match
 from operations.chats import get_chat_by_tg_id
 from operations.match_registrations import get_current_match_registrations
@@ -7,11 +8,12 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, ChatMem
 from telegram.ext import ContextTypes, CallbackContext
 from telegram.error import BadRequest
 
-from constants import DATETIME_FORMAT
+from constants import DATETIME_FORMAT, MAX_PLAYERS
 from telegram.constants import ParseMode
 
 def get_reply_markup(tg_chat_id):
-    current_match = get_current_match(tg_chat_id)
+    chat = get_chat_by_tg_id(tg_chat_id)
+    current_match = get_current_match(chat['id']) if chat else None
 
     if current_match:
         hours_until_match = get_hours_until_match(current_match['datetime'])
@@ -24,11 +26,14 @@ def get_reply_markup(tg_chat_id):
 
             return reply_markup
 
+    if not current_match:
+        return InlineKeyboardMarkup([[InlineKeyboardButton('Refresh 🔄', callback_data='refreshmessage')]])
+    match_id = current_match['match_id']
     keyboard = [
-        [InlineKeyboardButton("Register", callback_data='register')],
-        [InlineKeyboardButton("Register ➕ 1️⃣", callback_data='registeranother')],
-        [InlineKeyboardButton("Quit", callback_data=f'quit_{tg_chat_id}')],
-        [InlineKeyboardButton("Remove ➕ 1️⃣", callback_data=f'removeplusone_{tg_chat_id}')],
+        [InlineKeyboardButton("Register", callback_data=f'register_{match_id}')],
+        [InlineKeyboardButton("Register ➕ 1️⃣", callback_data=f'registeranother_{match_id}')],
+        [InlineKeyboardButton("Quit", callback_data=f'quit_{tg_chat_id}_{match_id}')],
+        [InlineKeyboardButton("Remove ➕ 1️⃣", callback_data=f'removeplusone_{tg_chat_id}_{match_id}')],
         [InlineKeyboardButton("Refresh 🔄", callback_data='refreshmessage')],
     ]
 
@@ -39,6 +44,8 @@ def get_reply_markup(tg_chat_id):
 
 def get_message(chat_id):
     current_match = get_current_match(chat_id)
+    if not current_match:
+        return 'There is no current match. Registration may have been cancelled.'
     current_match_registrations = get_current_match_registrations(chat_id)
 
     game_time_frmt = datetime.strptime(current_match['datetime'], DATETIME_FORMAT).strftime("%d.%m.%Y %H:%M")
@@ -61,17 +68,17 @@ def registered(current_match):
 
     message = "<b>Registered Players:</b>\n"
     for idx, match_registration in enumerate(current_match):
-        if idx == 14:
+        if idx == MAX_PLAYERS:
             message += "\n<b>Waiting List:</b>\n"
 
         if match_registration == None:
             message += f"{idx + 1}. Этот чубзик так и не удосужился запустить бота \n"
             continue
 
-        message += f"{idx + 1}. @{match_registration['nickname']} - {match_registration['name']} <i>(P{match_registration['priority']})</i>"
+        message += f"{idx + 1}. @{escape(str(match_registration['nickname'] or ''))} - {escape(str(match_registration['name'] or ''))} <i>(P{match_registration['priority']})</i>"
 
         if match_registration['is_plus']:
-            message += f" ➕ 1️⃣ from {match_registration['registered_by_nickname']}"
+            message += f" ➕ 1️⃣ from {escape(str(match_registration['registered_by_nickname'] or ''))}"
 
         if not match_registration['confirmed']:
             message += "<i> Not confirmed</i>"
@@ -130,6 +137,9 @@ async def show_registration_message(update: Update, context: CallbackContext):
     tg_chat_id = update.effective_chat.id
     chat_data = get_chat_by_tg_id(tg_chat_id)
 
+    if not chat_data:
+        await update.message.reply_text('This chat is not configured. Please use /start_repeating_job first.')
+        return
     await context.bot.send_message(chat_id=tg_chat_id, text=get_message(chat_data['id']), reply_markup=get_reply_markup(tg_chat_id), parse_mode=ParseMode.HTML)
 
 
@@ -147,12 +157,12 @@ async def last_match(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(last_match) == 0:
         return await update.message.reply_text("No last match available", parse_mode=ParseMode.HTML)
 
-    message = f"<b>Last Match Players for the game {last_match[0]['datetime']}:</b>\n"
+    message = f"<b>Last Match Players for the game {escape(str(last_match[0]['datetime']))}:</b>\n"
     for idx, player in enumerate(last_match):
-        if idx == 14:
+        if idx == MAX_PLAYERS:
             break
 
-        message += f"{idx + 1}. @{player['nickname']} {player['name']}\n"
+        message += f"{idx + 1}. @{escape(str(player['nickname'] or ''))} {escape(str(player['name'] or ''))}\n"
 
     await update.message.reply_text(message, parse_mode=ParseMode.HTML)
 
@@ -215,12 +225,12 @@ async def last_5_matches_players(update: Update, context: ContextTypes.DEFAULT_T
     match_dates = sorted(matches_by_date.keys(), reverse=True)
     message += f"<b>Matches included:</b>\n"
     for i, match_date in enumerate(match_dates[:5], 1):
-        message += f"{i}. {match_date}\n"
+        message += f"{i}. {escape(str(match_date))}\n"
     message += "\n"
     
     # Add players list
     message += f"<b>Players ({len(current_chat_players)} total):</b>\n"
-    for idx, player in enumerate(sorted(current_chat_players, key=lambda x: x['nickname']), 1):
-        message += f"{idx}. @{player['nickname']} {player['name']}\n"
+    for idx, player in enumerate(sorted(current_chat_players, key=lambda x: x['nickname'] or ''), 1):
+        message += f"{idx}. @{escape(str(player['nickname'] or ''))} {escape(str(player['name'] or ''))}\n"
     
     await update.message.reply_text(message, parse_mode=ParseMode.HTML)

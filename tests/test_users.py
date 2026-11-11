@@ -21,6 +21,9 @@ class DeleteAccountTests(unittest.IsolatedAsyncioTestCase):
         with closing(sqlite3.connect(common.DB_PATH)) as connection, connection:
             connection.executescript("""
                 CREATE TABLE Users (user_id INTEGER PRIMARY KEY, nickname TEXT, name TEXT);
+                CREATE TABLE Matches (match_id INTEGER PRIMARY KEY, datetime TEXT);
+                CREATE TABLE Match_Registration (registration_id INTEGER PRIMARY KEY,
+                    match_id INTEGER, user_id INTEGER, registered_by_id INTEGER);
                 INSERT INTO Users VALUES (7, 'player_seven', 'Player Seven');
                 INSERT INTO Users VALUES (8, 'player_eight', 'Player Eight');
             """)

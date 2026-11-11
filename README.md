@@ -81,3 +81,26 @@ Registration schedule:
   03:30 that day; an autumn 02:30 runs on its second occurrence (standard time).
 - Invitation confirmation still expires after four elapsed hours, rather than
   a calendar interval. These one-off invitation timers are not restored after a restart.
+
+Registration safety and history:
+
+- Registration buttons identify the match; confirmation and quit buttons also
+  identify the exact registration. Deleted registration IDs are never reused by
+  the bot. Unsafe buttons issued by older versions ask you to refresh the group
+  registration message. For an old private invitation, use Register yourself or
+  ask for a new invitation.
+- Before deleting your profile, leave upcoming matches and remove your invited
+  players using Quit / Remove, with the usual cancellation rules. Historical
+  roster places and guests remain visible after profile deletion.
+- `/stop` pauses the weekly schedule and preserves the chat, current roster,
+  draft, and history. The pause survives a restart. `/start_repeating_job` resumes
+  scheduling using the same internal chat ID.
+- `/cancel_match` marks the current match cancelled and closes its draft. It
+  preserves the records and never makes the previous match current again.
+  Scheduled runs do not reopen the cancelled game; an admin can explicitly use
+  `/start_registration` to open a new registration for the same game time.
+- Previous-match priority and history use the first 14 players in the same
+  priority / registration time / registration ID order as the roster.
+- New lifecycle tables are created automatically from
+  `migrations/add_registration_safety.sql`. Existing tables are not rebuilt;
+  the database must still contain the prepared core schema.

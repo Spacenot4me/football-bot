@@ -4,7 +4,7 @@ import sqlite3
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from operations.users import create_user, delete_user, get_all_users_from_db, get_user
+from operations.users import ActiveRegistrationsError, create_user, delete_user, get_all_users_from_db, get_user
 from utils import is_chat_admin
 
 logger = logging.getLogger(__name__)
@@ -59,6 +59,11 @@ async def delete_account(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user = get_user(user_id)
         if user:
             delete_user(user_id)
+    except ActiveRegistrationsError:
+        await context.bot.send_message(chat_id=user_id, text=(
+            'You still have registrations or invited players for upcoming matches. '
+            'Use Quit and Remove ➕ 1️⃣ in those game chats first, then delete your account.'))
+        return
     except sqlite3.Error:
         logger.exception("Could not delete user account")
         await context.bot.send_message(chat_id=user_id, text="Could not delete your account. Please try again later.")

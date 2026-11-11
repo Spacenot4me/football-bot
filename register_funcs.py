@@ -6,7 +6,8 @@ import pytz
 from date_utils import get_hours_until_match, get_current_time
 from operations.bans import delete_ban, get_players_ban
 from operations.chats import get_chat_by_tg_id
-from operations.match_registrations import check_if_user_played_before, check_if_user_registered, confirm_user_registration, create_match_registration, delete_match_registration, get_current_match_registrations
+from operations.match_registrations import check_if_user_played_before, check_if_user_registered, confirm_user_registration, create_match_registration, delete_match_registration, get_current_match_registrations, set_match_registration_priority
+from operations.registration_safety import initialize_registration_ids
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
 from telegram.error import BadRequest, Forbidden
@@ -14,10 +15,62 @@ from telegram.ext import CallbackContext, ContextTypes
 from constants import DATETIME_FORMAT, PRIORITY_HOURS, SQL_DATETIME_FORMAT
 from operations.matches import get_current_match, get_match, was_in_last_match
 from operations.users import get_all_users_from_db, get_user, get_user_by_nickname
-from utils import get_reply_markup, is_user_in_chat, get_message
+from utils import get_reply_markup, is_chat_admin, is_user_in_chat, get_message
 from draft_funcs import on_player_removed, sync_registration
 
 logger = logging.getLogger(__name__)
+
+async def set_priority(update: Update, context: CallbackContext):
+    """Let chat admins override a registered player's priority for one match."""
+    message = update.effective_message
+    if update.effective_chat.type not in ('group', 'supergroup'):
+        await message.reply_text('Use /set_priority in the group where the match is held.')
+        return
+    if not update.effective_user:
+        await message.reply_text('Send this command from your personal account as a chat admin.')
+        return
+    if not await is_chat_admin(update, context):
+        return
+
+    args = context.args or []
+    if (len(args) != 2 or not re.fullmatch(r'@[A-Za-z][A-Za-z0-9_]{0,31}', args[0])
+            or args[1] not in ('1', '2', '3', '4')):
+        await message.reply_text(
+            'Usage: /set_priority @username 1\n'
+            'Priority: 1 to 4. Lower numbers go first in the queue.'
+        )
+        return
+
+    tg_chat_id = update.effective_chat.id
+    priority = int(args[1])
+    try:
+        chat = get_chat_by_tg_id(tg_chat_id)
+        if not chat:
+            await message.reply_text('This chat is not configured. Use /start_repeating_job first.')
+            return
+        match = get_current_match(chat['id'])
+        if not match or get_hours_until_match(match['datetime']) <= 0:
+            await message.reply_text('There is no open registration for this chat.')
+            return
+        player = get_user_by_nickname(args[0][1:])
+        if not player:
+            await message.reply_text('This user is not registered in the bot.')
+            return
+        changed = set_match_registration_priority(chat['id'], match['match_id'], player['user_id'], priority)
+    except sqlite3.Error:
+        logger.exception('Could not change match registration priority')
+        await message.reply_text('Could not change the priority. Please try again.')
+        return
+
+    if not changed:
+        await message.reply_text('This player is not registered for the current match.')
+        return
+    await sync_registration(context, tg_chat_id, match['match_id'])
+    await message.reply_text(
+        f"Priority for @{player['nickname']} is now P{priority}.\n"
+        'Press Refresh 🔄 on the registration message to update the list.'
+    )
+
 
 def is_player_banned(user_id):
     player_bans = get_players_ban(user_id)
@@ -81,13 +134,16 @@ def get_priority(user_id, reg_time, game_time, was_in_last_match, is_plus):
 
     return 2
 
-async def register_another_from_chat(update: Update, context: CallbackContext):
+async def register_another_from_chat(update: Update, context: CallbackContext, expected_match_id=None):
     user_id = update.effective_user.id
     tg_chat_id = update.effective_chat.id
     users = get_all_users_from_db()
 
     chat_data = get_chat_by_tg_id(tg_chat_id)
     current_match = get_current_match(chat_data['id']) if chat_data else None
+    if expected_match_id is not None and (not current_match or current_match['match_id'] != int(expected_match_id)):
+        await context.bot.send_message(chat_id=user_id, text='This registration menu is for an older match. Press Refresh in the game chat.')
+        return
     if not current_match or get_hours_until_match(current_match['datetime']) < 0:
         await context.bot.send_message(chat_id=user_id, text="There is no open registration for this chat.")
         return
@@ -102,7 +158,7 @@ async def register_another_from_chat(update: Update, context: CallbackContext):
 
     for index in range(0, len(users), 2):
         keyboard.append([
-            InlineKeyboardButton(user['name'], callback_data=f"registerplusone_{tg_chat_id}_{user['user_id']}")
+            InlineKeyboardButton(user['name'], callback_data=f"registerplusone_{tg_chat_id}_{user['user_id']}_{current_match['match_id']}")
             for user in users[index:index + 2]
         ])
 
@@ -147,10 +203,12 @@ async def register_plus_one_by_username(update: Update, context: CallbackContext
     await register_plus_one(update, context, tg_chat_id, player['user_id'], expected_match_id)
 
 
-def register_core(chat_id, user_id, registered_by_id, is_plus=False, confirmed=True):
+def register_core(chat_id, user_id, registered_by_id, is_plus=False, confirmed=True, expected_match_id=None):
     was_in_last_match_res = was_in_last_match(chat_id, user_id)
 
     current_match = get_current_match(chat_id)
+    if not current_match or (expected_match_id is not None and current_match['match_id'] != int(expected_match_id)):
+        return False
     match_id = current_match['match_id']
     start_time = current_match['datetime']
     reg_time = current_match['created_at']
@@ -174,7 +232,7 @@ def register_core(chat_id, user_id, registered_by_id, is_plus=False, confirmed=T
 
     return create_result
 
-async def register_himself(update: Update, context: CallbackContext):
+async def register_himself(update: Update, context: CallbackContext, expected_match_id=None):
     user_id = update.callback_query.from_user.id
     user_name = update.callback_query.from_user.username
     tg_chat_id = update.effective_chat.id
@@ -182,13 +240,17 @@ async def register_himself(update: Update, context: CallbackContext):
     chat_data = get_chat_by_tg_id(tg_chat_id)
     user = get_user(user_id)
 
+    current_match = get_current_match(chat_data['id']) if chat_data else None
+    if not current_match or (expected_match_id is not None and current_match['match_id'] != int(expected_match_id)):
+        await context.bot.send_message(chat_id=tg_chat_id, text='This registration button is no longer valid for the current match. Press Refresh.')
+        return
     chat_id = chat_data['id']
 
     if not user:
         await context.bot.send_message(chat_id=tg_chat_id, text=f"@{user_name} To be able to register to the matches you need to activate me in the DM.")
         return
 
-    res = register_core(chat_id, user_id, user_id)
+    res = register_core(chat_id, user_id, user_id, expected_match_id=current_match['match_id'])
 
     if res:
         await sync_registration(context, tg_chat_id, get_current_match(chat_id)['match_id'])
@@ -224,7 +286,7 @@ async def register_plus_one(update: Update, context: CallbackContext, tg_chat_id
     if not current_match:
         await respond("There is no match open for registration in this chat.")
         return
-    if expected_match_id is not None and current_match['match_id'] != expected_match_id:
+    if expected_match_id is not None and current_match['match_id'] != int(expected_match_id):
         await respond("This +1 menu is for an older match. Click Register ➕ 1️⃣ again for the current match.")
         return
     if get_hours_until_match(current_match['datetime']) < 0:
@@ -236,14 +298,15 @@ async def register_plus_one(update: Update, context: CallbackContext, tg_chat_id
         return
 
     user_in_chat = await is_user_in_chat(update, context, tg_chat_id, user_id)
-    res = register_core(chat_data['id'], user_id=user_id, registered_by_id=request_user_id, is_plus=not user_in_chat, confirmed=False)
+    res = register_core(chat_data['id'], user_id=user_id, registered_by_id=request_user_id,
+                        is_plus=not user_in_chat, confirmed=False, expected_match_id=match_id)
     if not res:
         await respond("You cannot register more people for this match.")
         return
 
     keyboard = [
-        [InlineKeyboardButton("Confirm", callback_data=f'confirm_{tg_chat_id}_{match_id}_{res}')],
-        [InlineKeyboardButton("Quit", callback_data=f'removefromdm_{tg_chat_id}')],
+        [InlineKeyboardButton("Confirm", callback_data=f'confirm2_{tg_chat_id}_{match_id}_{res}')],
+        [InlineKeyboardButton("Quit", callback_data=f'leave_{tg_chat_id}_{match_id}_{res}')],
     ]
     try:
         await context.bot.send_message(
@@ -281,7 +344,7 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE, tg_chat_id
 
     async def show_result(text, allow_quit=False):
         markup = InlineKeyboardMarkup([
-            [InlineKeyboardButton("Quit", callback_data=f'removefromdm_{tg_chat_id}')],
+            [InlineKeyboardButton("Quit", callback_data=f'leave_{tg_chat_id}_{expected_match_id}_{expected_registration_id}')],
         ]) if allow_quit else None
         try:
             await query.edit_message_text(text=text, reply_markup=markup)
@@ -290,6 +353,10 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE, tg_chat_id
             await context.bot.send_message(chat_id=user_id, text=text, reply_markup=markup)
 
     try:
+        if expected_match_id is None or expected_registration_id is None:
+            await show_result('This old invitation button is no longer valid. Use Register in the game chat or ask to be invited again.')
+            return
+        initialize_registration_ids()
         chat_data = get_chat_by_tg_id(tg_chat_id)
         current_match = get_current_match(chat_data['id']) if chat_data else None
         if not current_match or (expected_match_id is not None and current_match['match_id'] != int(expected_match_id)):

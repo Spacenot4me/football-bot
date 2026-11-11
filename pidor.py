@@ -1,6 +1,7 @@
 import os
 import random
 from datetime import datetime, timedelta
+from html import escape
 import pytz
 from telegram import ChatMember, Update
 from telegram.ext import ContextTypes
@@ -50,9 +51,10 @@ def record_selection(user_id, chat_id):
 # Get stats about how many times each user has been selected
 def get_selection_stats(chat_id):
     return fetch_query("""
-    SELECT u.nickname, u.name, COUNT(rs.selection_id) as times_selected
+    SELECT COALESCE(u.nickname, CAST(rs.user_id AS TEXT)) AS nickname,
+           COALESCE(u.name, 'Deleted account') AS name, COUNT(rs.selection_id) as times_selected
     FROM Random_Selections rs
-    JOIN Users u ON rs.user_id = u.user_id
+    LEFT JOIN Users u ON rs.user_id = u.user_id
     WHERE rs.chat_id = ?
     GROUP BY rs.user_id
     ORDER BY times_selected DESC
@@ -77,10 +79,11 @@ async def pick_random_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         hours, remainder = divmod(time_left.seconds, 3600)
         minutes, seconds = divmod(remainder, 60)
         
-        user = get_user(last_selection['user_id'])
+        user = get_user(last_selection['user_id']) or {
+            'nickname': str(last_selection['user_id']), 'name': 'Deleted account'}
         
         await update.message.reply_text(
-            f"A user has already been selected today: @{user['nickname']} ({user['name']})\n"
+            f"A user has already been selected today: @{escape(str(user['nickname'] or ''))} ({escape(str(user['name'] or ''))})\n"
             f"Next selection will be available in {hours} hours and {minutes} minutes.",
             parse_mode=ParseMode.HTML
         )
@@ -177,7 +180,7 @@ async def get_random_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = "<b>Pidor Statistics:</b>\n\n"
     
     for idx, stat in enumerate(stats, start=1):
-        message += f"{idx}. @{stat['nickname']} ({stat['name']}): selected {stat['times_selected']} time(s)\n"
+        message += f"{idx}. @{escape(str(stat['nickname'] or ''))} ({escape(str(stat['name'] or ''))}): selected {stat['times_selected']} time(s)\n"
     
     await update.message.reply_text(message, parse_mode=ParseMode.HTML)
 

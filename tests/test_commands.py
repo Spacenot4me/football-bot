@@ -158,6 +158,7 @@ class CommandTests(unittest.IsolatedAsyncioTestCase):
             ("/help", main.unknown_command),
             ("/register_another_from_chat", register_funcs.register_another_from_chat),
             ("/confirm", register_funcs.confirm_command),
+            ("/set_priority", register_funcs.set_priority),
         ):
             message = Message(
                 1, datetime.now(timezone.utc), Chat(7, "private"), text=text,
@@ -179,6 +180,7 @@ class CommandTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('confirmation', commands['cancel_draft'])
         self.assertIn('register_another_from_chat', commands)
         self.assertIn('confirm', commands)
+        self.assertIn('1-4', commands['set_priority'])
         for name, description in commands.items():
             self.assertTrue(1 <= len(name) <= 32)
             self.assertTrue(1 <= len(description) <= 256)

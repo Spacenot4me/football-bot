@@ -31,6 +31,9 @@ async def ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     current_match = get_current_match(chat['id'])
+    if not current_match:
+        await update.message.reply_text('There is no current match. Open registration before using /ban.')
+        return
     datetime_parsed = datetime.strptime(current_match['datetime'], DATETIME_FORMAT)
 
     ten_days = timedelta(days=10)
@@ -99,13 +102,13 @@ async def get_my_bans(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     bans = get_players_ban(user_id)
 
-    message = f"Hello {escape(user['name'])}!\nHere's a list of your current bans:\n"
+    message = f"Hello {escape(str(user['name'] or ''))}!\nHere's a list of your current bans:\n"
 
     if not bans:
         message += "You currently have no bans."
     else:
         for idx, ban in enumerate(bans, start=1):
-            message += f"<b>Ban {idx}:</b> Expires on {ban['until']}\n"
+            message += f"<b>Ban {idx}:</b> Expires on {escape(str(ban['until']))}\n"
 
     await context.bot.send_message(chat_id=tg_chat_id, text=message, parse_mode=ParseMode.HTML)
 
@@ -121,6 +124,7 @@ async def get_all_bans_command(update: Update, context: ContextTypes.DEFAULT_TYP
     else:
         for idx, ban in enumerate(bans, start=1):
             player = get_user(ban['user_id'])
-            message += f"<b>Ban {idx} - {player['name']}:</b> Expires on {ban['until']}\n"
+            name = player['name'] if player else 'Deleted account'
+            message += f"<b>Ban {idx} - {escape(str(name or ''))}:</b> Expires on {escape(str(ban['until']))}\n"
 
     await context.bot.send_message(chat_id=tg_chat_id, text=message, parse_mode=ParseMode.HTML)

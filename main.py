@@ -1,6 +1,6 @@
 import os
 import logging
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand, BotCommandScopeAllGroupChats
+from telegram import Update, BotCommand, BotCommandScopeAllGroupChats
 from telegram.error import TelegramError
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, CallbackContext, MessageHandler, filters
 from bans import ban, ban_forever, get_all_bans_command, get_my_bans, unban
@@ -8,8 +8,8 @@ from matches import cancel_match
 from operations.chats import get_all_chats, get_chat_by_tg_id, update_chat
 from users import delete_account, get_all_users, register_user
 from utils import refresh_message, show_registration_message, last_match, last_5_matches_players
-from register_funcs import register_himself, register_another_from_chat, register_plus_one, register_plus_one_by_username, confirm, confirm_command
-from remove_funcs import remove_from_dm, remove_other_plus_one, remove_plus_one, remove_other, start_remove_plus_one
+from register_funcs import register_himself, register_another_from_chat, register_plus_one, register_plus_one_by_username, confirm, confirm_command, set_priority
+from remove_funcs import remove_from_dm, remove_other_plus_one, remove_plus_one, remove_other, start_remove_plus_one, start_quit
 from jobs_funcs import get_jobs, start_repeating_job, stop_repeating_job, manual_start_registration, schedule_weekly_registration
 from pidor import pick_random_user, get_random_stats, clear_random_stats
 from draft_funcs import captains, cancel_team_draft, teams, draft_callback, draft_help
@@ -46,6 +46,7 @@ USER_COMMANDS = [
     BotCommand('cancel_match', 'Cancel the current match (admin)'),
     BotCommand('remove_other', 'Remove a player: /remove_other @username (admin)'),
     BotCommand('remove_other_plus_one', 'Remove the external guest invited by @username (admin)'),
+    BotCommand('set_priority', 'Change match priority: /set_priority @username 1 (1-4, admin)'),
     BotCommand('clear_random_stats', 'Clear daily selection statistics for this chat (admin)'),
 ]
 
@@ -69,7 +70,8 @@ def initiate(application):
     chats = get_all_chats()
 
     for chat in chats:
-        schedule_weekly_registration(application.job_queue, chat['chat_id'], chat['reg_week_day'], chat['reg_time'])
+        if chat.get('schedule_enabled', True):
+            schedule_weekly_registration(application.job_queue, chat['chat_id'], chat['reg_week_day'], chat['reg_time'])
 
 def migchat(bot, update):
     oldchatid = update.message.migrate_from_chat_id
@@ -106,6 +108,7 @@ def main():
     application.add_handler(CommandHandler("last_5_matches_players", last_5_matches_players))
     application.add_handler(CommandHandler("remove_other", remove_other))
     application.add_handler(CommandHandler("remove_other_plus_one", remove_other_plus_one))
+    application.add_handler(CommandHandler("set_priority", set_priority))
 
     application.add_handler(CommandHandler("confirm", confirm_command))
     application.add_handler(CommandHandler("register_another_from_chat", register_another_from_chat))
@@ -120,12 +123,6 @@ def main():
     application.add_handler(CommandHandler("pidor", pick_random_user))
     application.add_handler(CommandHandler("pidor_stats", get_random_stats))
     application.add_handler(CommandHandler("clear_random_stats", clear_random_stats))
-
-    callback_mapping = {
-        'register': register_himself,
-        'registeranother': register_another_from_chat,
-        'refreshmessage': refresh_message,
-    }
 
     def parse_callback_data(data):
         parts = data.split('_')
@@ -145,47 +142,31 @@ def main():
             await draft_callback(update, context)
             return
 
-        if action == 'quit':
-            chat_id = parsed_callback_data[1]
-            user_id = update.callback_query.from_user.id
-
-            print(action, chat_id, user_id)
-
-            keyboard = [
-                [InlineKeyboardButton(
-                    "Yes, confirm quit", callback_data=f'removefromdm_{chat_id}')],
-            ]
-            confirm_reply_markup = InlineKeyboardMarkup(keyboard)
-            await context.bot.send_message(chat_id=user_id, text="Do you want to quit?", reply_markup=confirm_reply_markup)
-
-        if action == 'removeplusone':
-            chat_id = parsed_callback_data[1]
-            await start_remove_plus_one(update, context, chat_id)
-
-        if action == 'removeplusoneconfirm':
-            chat_id = parsed_callback_data[1]
-            registration_id = parsed_callback_data[2] if len(parsed_callback_data) == 3 else None
-            await remove_plus_one(update, context, chat_id, registration_id)
-
-        if action == 'confirm':
-            chat_id = parsed_callback_data[1]
-            match_id = parsed_callback_data[2] if len(parsed_callback_data) >= 3 else None
-            registration_id = parsed_callback_data[3] if len(parsed_callback_data) == 4 else None
-            await confirm(update, context, chat_id, match_id, registration_id)
-
-        if action == 'removefromdm':
-            chat_id = parsed_callback_data[1]
-            await remove_from_dm(update, context, chat_id)
-
-        if action == 'registerplusone':
-            chat_id = parsed_callback_data[1]
-            user_id = parsed_callback_data[2]
-
-            await register_plus_one(update, context, chat_id, user_id)
-
-        # Call the corresponding function
-        if action in callback_mapping:
-            await callback_mapping[action](update, context)
+        # Legacy destructive callbacks do not identify a durable invitation/match.
+        # Keep read-only Refresh usable so old group messages can be upgraded.
+        if action == 'refreshmessage' and len(parsed_callback_data) == 1:
+            await refresh_message(update, context)
+        elif action == 'register' and len(parsed_callback_data) == 2:
+            await register_himself(update, context, parsed_callback_data[1])
+        elif action == 'registeranother' and len(parsed_callback_data) == 2:
+            await register_another_from_chat(update, context, parsed_callback_data[1])
+        elif action == 'quit' and len(parsed_callback_data) == 3:
+            await start_quit(update, context, parsed_callback_data[1], parsed_callback_data[2])
+        elif action == 'removeplusone' and len(parsed_callback_data) == 3:
+            await start_remove_plus_one(update, context, parsed_callback_data[1], parsed_callback_data[2])
+        elif action == 'confirm2' and len(parsed_callback_data) == 4:
+            await confirm(update, context, *parsed_callback_data[1:])
+        elif action == 'leave' and len(parsed_callback_data) == 4:
+            await remove_from_dm(update, context, *parsed_callback_data[1:])
+        elif action == 'removeinvite' and len(parsed_callback_data) == 4:
+            await remove_plus_one(update, context, parsed_callback_data[1], parsed_callback_data[3], parsed_callback_data[2])
+        elif action == 'registerplusone' and len(parsed_callback_data) == 4:
+            await register_plus_one(update, context, *parsed_callback_data[1:])
+        else:
+            await context.bot.send_message(chat_id=query.from_user.id, text=(
+                'This old button is no longer valid. Press Refresh on the registration message '
+                'in the game chat and use its updated buttons. To confirm your participation, '
+                'use Register yourself or ask to be invited again.'))
 
     application.add_handler(CallbackQueryHandler(callback_query_handler))
     application.add_handler(MessageHandler(
